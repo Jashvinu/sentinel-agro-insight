@@ -7,6 +7,8 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { useEarthEngine } from '@/hooks/use-earth-engine';
+import { useToast } from '@/hooks/use-toast';
 import { 
   Map, 
   Layers, 
@@ -16,7 +18,9 @@ import {
   Calendar,
   Play,
   Pause,
-  Key
+  Key,
+  Satellite,
+  Loader2
 } from 'lucide-react';
 
 interface FieldMapProps {
@@ -29,11 +33,13 @@ export const FieldMap: React.FC<FieldMapProps> = ({
   height = "h-96"
 }) => {
   const [isPlaying, setIsPlaying] = useState(false);
-  const [selectedLayer, setSelectedLayer] = useState('ndvi');
+  const [selectedLayer, setSelectedLayer] = useState('NDVI');
   const [mapboxToken, setMapboxToken] = useState('');
   const [showTokenInput, setShowTokenInput] = useState(true);
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<mapboxgl.Map | null>(null);
+  const { data: earthEngineData, loading: eeLoading, fetchData } = useEarthEngine();
+  const { toast } = useToast();
 
   // Farm polygon coordinates (your provided coordinates)
   const farmPolygon = [
@@ -45,11 +51,20 @@ export const FieldMap: React.FC<FieldMapProps> = ({
   ];
 
   const layers = [
-    { id: 'ndvi', name: 'NDVI', color: 'bg-success' },
-    { id: 'evi', name: 'EVI', color: 'bg-primary' },
-    { id: 'ndwi', name: 'NDWI', color: 'bg-accent' },
-    { id: 'savi', name: 'SAVI', color: 'bg-warning' },
+    { id: 'NDVI', name: 'NDVI', color: 'bg-success', description: 'Vegetation Health' },
+    { id: 'EVI', name: 'EVI', color: 'bg-primary', description: 'Enhanced Vegetation' },
+    { id: 'NDWI', name: 'NDWI', color: 'bg-accent', description: 'Water Content' },
+    { id: 'SAVI', name: 'SAVI', color: 'bg-warning', description: 'Soil Adjusted' },
   ];
+
+  const fetchSatelliteData = async () => {
+    if (!earthEngineData || eeLoading) {
+      const endDate = new Date().toISOString().split('T')[0];
+      const startDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+      
+      await fetchData(farmPolygon, startDate, endDate, selectedLayer);
+    }
+  };
 
   const initializeMap = (token: string) => {
     if (!mapContainer.current || !token) return;
@@ -78,14 +93,17 @@ export const FieldMap: React.FC<FieldMapProps> = ({
         }
       });
 
-      // Add polygon fill
+      // Add polygon fill with dynamic color based on NDVI
+      const fillColor = earthEngineData?.mean > 0.7 ? '#22c55e' : 
+                       earthEngineData?.mean > 0.4 ? '#eab308' : '#ef4444';
+      
       map.current?.addLayer({
         id: 'farm-polygon-fill',
         type: 'fill',
         source: 'farm-polygon',
         paint: {
-          'fill-color': '#22c55e',
-          'fill-opacity': 0.2
+          'fill-color': fillColor,
+          'fill-opacity': 0.3
         }
       });
 
@@ -95,14 +113,29 @@ export const FieldMap: React.FC<FieldMapProps> = ({
         type: 'line',
         source: 'farm-polygon',
         paint: {
-          'line-color': '#22c55e',
+          'line-color': '#3b82f6',
           'line-width': 2
         }
       });
 
-      // Add center marker
+      // Add center marker with popup
+      const popup = new mapboxgl.Popup({ offset: 25 }).setHTML(`
+        <div class="p-2">
+          <h3 class="font-semibold">Farm Analytics</h3>
+          <p class="text-sm">Project: wrkfarm-415118</p>
+          ${earthEngineData ? `
+            <div class="mt-2 space-y-1 text-xs">
+              <div>NDVI: ${earthEngineData.mean?.toFixed(3) || 'N/A'}</div>
+              <div>Cloud Cover: ${earthEngineData.cloudCover?.toFixed(1) || 'N/A'}%</div>
+              <div>Date: ${earthEngineData.date ? new Date(earthEngineData.date).toLocaleDateString() : 'N/A'}</div>
+            </div>
+          ` : ''}
+        </div>
+      `);
+
       new mapboxgl.Marker({ color: '#3b82f6' })
         .setLngLat([77.77385665720399, 12.391892446684909])
+        .setPopup(popup)
         .addTo(map.current!);
     });
 
@@ -110,6 +143,9 @@ export const FieldMap: React.FC<FieldMapProps> = ({
     map.current.addControl(new mapboxgl.NavigationControl(), 'top-right');
     
     setShowTokenInput(false);
+    
+    // Fetch initial satellite data
+    fetchSatelliteData();
   };
 
   useEffect(() => {
@@ -124,17 +160,31 @@ export const FieldMap: React.FC<FieldMapProps> = ({
     }
   };
 
+  const handleLayerChange = (layerId: string) => {
+    setSelectedLayer(layerId);
+    if (!eeLoading && map.current) {
+      fetchSatelliteData();
+    }
+  };
+
   return (
     <Card className={cn("overflow-hidden", className)}>
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between">
           <CardTitle className="flex items-center space-x-2">
-            <Map className="w-5 h-5 text-primary" />
-            <span>Field Explorer</span>
+            <Satellite className="w-5 h-5 text-primary" />
+            <span>Earth Engine Analytics</span>
           </CardTitle>
-          <Badge variant="outline" className="text-xs">
-            Live Data
-          </Badge>
+          <div className="flex items-center space-x-2">
+            <Badge variant="outline" className="text-xs">
+              Google Project: wrkfarm-415118
+            </Badge>
+            {earthEngineData && (
+              <Badge variant="outline" className="text-xs bg-success/10 text-success">
+                Live Data
+              </Badge>
+            )}
+          </div>
         </div>
       </CardHeader>
       
@@ -153,7 +203,8 @@ export const FieldMap: React.FC<FieldMapProps> = ({
                   variant={selectedLayer === layer.id ? "default" : "ghost"}
                   size="sm"
                   className="flex items-center space-x-1"
-                  onClick={() => setSelectedLayer(layer.id)}
+                  onClick={() => handleLayerChange(layer.id)}
+                  disabled={eeLoading}
                 >
                   <div className={cn("w-2 h-2 rounded-full", layer.color)} />
                   <span className="text-xs">{layer.name}</span>
@@ -163,6 +214,18 @@ export const FieldMap: React.FC<FieldMapProps> = ({
           </div>
           
           <div className="flex items-center space-x-2">
+            <Button 
+              variant="outline" 
+              size="sm"
+              onClick={fetchSatelliteData}
+              disabled={eeLoading}
+            >
+              {eeLoading ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Satellite className="w-4 h-4" />
+              )}
+            </Button>
             <Button variant="outline" size="sm">
               <Calendar className="w-4 h-4" />
             </Button>
@@ -245,12 +308,18 @@ export const FieldMap: React.FC<FieldMapProps> = ({
         {/* Status Bar */}
         <div className="flex items-center justify-between p-3 bg-muted/30 text-xs text-muted-foreground">
           <div className="flex items-center space-x-4">
-            <span>Last Update: 2024-01-15 14:30 UTC</span>
+            <span>Google Earth Engine</span>
             <span>Resolution: 10m/pixel</span>
+            {earthEngineData && (
+              <>
+                <span>{selectedLayer}: {earthEngineData.mean?.toFixed(3)}</span>
+                <span>Cloud: {earthEngineData.cloudCover?.toFixed(1)}%</span>
+              </>
+            )}
           </div>
           <div className="flex items-center space-x-2">
-            <div className="w-2 h-2 bg-success rounded-full animate-pulse" />
-            <span>Connected</span>
+            <div className={cn("w-2 h-2 rounded-full animate-pulse", earthEngineData ? "bg-success" : "bg-warning")} />
+            <span>{earthEngineData ? "Earth Engine Connected" : "Initializing..."}</span>
           </div>
         </div>
       </CardContent>
