@@ -2,41 +2,72 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Definition of the design system. All colors, gradients, fonts, etc should be defined here. 
+/* Precision Agriculture Design System
+Agriculture-inspired colors: forest greens, sky blues, earth tones
 All colors MUST be HSL.
 */
 
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 222.2 84% 4.9%;
+    /* Base colors - clean whites and deep forestry */
+    --background: 210 30% 98%;
+    --foreground: 150 15% 15%;
 
+    /* Card system - subtle earth tones */
     --card: 0 0% 100%;
-    --card-foreground: 222.2 84% 4.9%;
+    --card-foreground: 150 15% 15%;
 
+    /* Popovers */
     --popover: 0 0% 100%;
-    --popover-foreground: 222.2 84% 4.9%;
+    --popover-foreground: 150 15% 15%;
 
-    --primary: 222.2 47.4% 11.2%;
-    --primary-foreground: 210 40% 98%;
+    /* Primary - Deep forest green for agriculture */
+    --primary: 145 85% 25%;
+    --primary-foreground: 0 0% 98%;
+    --primary-glow: 145 60% 45%;
 
-    --secondary: 210 40% 96.1%;
-    --secondary-foreground: 222.2 47.4% 11.2%;
+    /* Secondary - Earth brown/bronze */
+    --secondary: 30 35% 85%;
+    --secondary-foreground: 150 15% 15%;
 
-    --muted: 210 40% 96.1%;
-    --muted-foreground: 215.4 16.3% 46.9%;
+    /* Muted - Soft sage */
+    --muted: 120 20% 90%;
+    --muted-foreground: 150 10% 45%;
 
-    --accent: 210 40% 96.1%;
-    --accent-foreground: 222.2 47.4% 11.2%;
+    /* Accent - Sky blue for water features */
+    --accent: 200 85% 65%;
+    --accent-foreground: 0 0% 98%;
 
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 210 40% 98%;
+    /* Alert system - Agriculture status colors */
+    --success: 120 60% 50%;
+    --success-foreground: 0 0% 98%;
+    --warning: 45 85% 55%;
+    --warning-foreground: 0 0% 10%;
+    --destructive: 0 75% 55%;
+    --destructive-foreground: 0 0% 98%;
 
-    --border: 214.3 31.8% 91.4%;
-    --input: 214.3 31.8% 91.4%;
-    --ring: 222.2 84% 4.9%;
+    /* Borders and inputs - Subtle earth */
+    --border: 120 15% 85%;
+    --input: 120 15% 92%;
+    --ring: 145 85% 35%;
 
-    --radius: 0.5rem;
+    /* Gradients - Atmospheric and terrain */
+    --gradient-primary: linear-gradient(135deg, hsl(145 85% 25%), hsl(145 60% 45%));
+    --gradient-sky: linear-gradient(180deg, hsl(200 85% 75%), hsl(200 85% 65%));
+    --gradient-earth: linear-gradient(45deg, hsl(30 45% 65%), hsl(40 55% 55%));
+    --gradient-satellite: linear-gradient(135deg, hsl(240 15% 15%), hsl(200 25% 25%));
+    --gradient-crop: linear-gradient(90deg, hsl(120 60% 50%), hsl(145 65% 45%));
+
+    /* Shadows - Atmospheric depth */
+    --shadow-atmospheric: 0 20px 40px -10px hsl(145 85% 25% / 0.3);
+    --shadow-satellite: 0 8px 32px -8px hsl(240 15% 15% / 0.4);
+    --shadow-glow: 0 0 30px hsl(145 60% 45% / 0.3);
+
+    /* Animation curves - Satellite scanning */
+    --transition-scan: all 0.4s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+    --transition-smooth: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+
+    --radius: 0.75rem;
 
     --sidebar-background: 0 0% 98%;
 
@@ -56,33 +87,39 @@ All colors MUST be HSL.
   }
 
   .dark {
-    --background: 222.2 84% 4.9%;
-    --foreground: 210 40% 98%;
+    /* Dark mode - Satellite night vision theme */
+    --background: 240 15% 8%;
+    --foreground: 120 15% 85%;
 
-    --card: 222.2 84% 4.9%;
-    --card-foreground: 210 40% 98%;
+    --card: 240 10% 12%;
+    --card-foreground: 120 15% 85%;
 
-    --popover: 222.2 84% 4.9%;
-    --popover-foreground: 210 40% 98%;
+    --popover: 240 10% 12%;
+    --popover-foreground: 120 15% 85%;
 
-    --primary: 210 40% 98%;
-    --primary-foreground: 222.2 47.4% 11.2%;
+    --primary: 145 60% 45%;
+    --primary-foreground: 0 0% 98%;
+    --primary-glow: 145 60% 55%;
 
-    --secondary: 217.2 32.6% 17.5%;
-    --secondary-foreground: 210 40% 98%;
+    --secondary: 240 8% 18%;
+    --secondary-foreground: 120 15% 85%;
 
-    --muted: 217.2 32.6% 17.5%;
-    --muted-foreground: 215 20.2% 65.1%;
+    --muted: 240 8% 15%;
+    --muted-foreground: 120 8% 55%;
 
-    --accent: 217.2 32.6% 17.5%;
-    --accent-foreground: 210 40% 98%;
+    --accent: 200 85% 55%;
+    --accent-foreground: 0 0% 98%;
 
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 210 40% 98%;
+    --success: 120 50% 45%;
+    --success-foreground: 0 0% 98%;
+    --warning: 45 75% 45%;
+    --warning-foreground: 0 0% 98%;
+    --destructive: 0 65% 45%;
+    --destructive-foreground: 0 0% 98%;
 
-    --border: 217.2 32.6% 17.5%;
-    --input: 217.2 32.6% 17.5%;
-    --ring: 212.7 26.8% 83.9%;
+    --border: 240 8% 20%;
+    --input: 240 8% 15%;
+    --ring: 145 60% 45%;
     --sidebar-background: 240 5.9% 10%;
     --sidebar-foreground: 240 4.8% 95.9%;
     --sidebar-primary: 224.3 76.3% 48%;
