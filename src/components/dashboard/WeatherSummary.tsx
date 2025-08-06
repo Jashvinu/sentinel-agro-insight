@@ -31,18 +31,20 @@ const WeatherDay: React.FC<WeatherDayProps> = ({
   precipitation,
   condition 
 }) => (
-  <div className="flex flex-col items-center space-y-2 p-3 rounded-lg bg-muted/30 hover:bg-muted/50 transition-colors">
-    <p className="text-xs font-medium text-muted-foreground">{day}</p>
-    <Icon className="w-6 h-6 text-accent" />
-    <div className="text-center">
+  <div className="flex flex-col items-center justify-between space-y-1.5 p-2 min-h-[120px] rounded-lg bg-muted/30 hover:bg-muted/50 transition-colors">
+    <p className="text-xs font-medium text-muted-foreground truncate w-full text-center">{day}</p>
+    <Icon className="w-5 h-5 text-accent flex-shrink-0" />
+    <div className="text-center space-y-0.5">
       <p className="text-sm font-semibold text-foreground">{high}°</p>
       <p className="text-xs text-muted-foreground">{low}°</p>
     </div>
-    {precipitation > 0 && (
-      <div className="flex items-center space-x-1">
-        <Droplets className="w-3 h-3 text-accent" />
-        <span className="text-xs text-accent">{precipitation}mm</span>
+    {precipitation > 0 ? (
+      <div className="flex items-center justify-center space-x-1 min-h-[20px]">
+        <Droplets className="w-3 h-3 text-accent flex-shrink-0" />
+        <span className="text-xs text-accent whitespace-nowrap">{precipitation.toFixed(1)}mm</span>
       </div>
+    ) : (
+      <div className="min-h-[20px]"></div>
     )}
   </div>
 );
@@ -160,27 +162,33 @@ export const WeatherSummary: React.FC = () => {
       <CardContent className="space-y-4">
         {/* Current Conditions */}
         {currentConditions && (
-          <div className="grid grid-cols-3 gap-4 p-4 bg-gradient-sky/10 rounded-lg">
-            <div className="flex items-center space-x-2">
-              <Thermometer className="w-4 h-4 text-warning" />
-              <div>
-                <p className="text-xs text-muted-foreground">Temperature</p>
-                <p className="text-sm font-semibold">{currentConditions.currentTemp}°C</p>
-                <p className="text-xs text-muted-foreground">Feels {currentConditions.currentApparent}°C</p>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 p-4 bg-gradient-to-r from-primary/5 to-accent/5 rounded-lg">
+            <div className="flex items-center space-x-3">
+              <div className="flex-shrink-0">
+                <Thermometer className="w-5 h-5 text-warning" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-xs text-muted-foreground mb-1">Temperature</p>
+                <p className="text-base font-semibold text-foreground">{currentConditions.currentTemp}°C</p>
+                <p className="text-xs text-muted-foreground">Feels like {currentConditions.currentApparent}°C</p>
               </div>
             </div>
-            <div className="flex items-center space-x-2">
-              <Wind className="w-4 h-4 text-accent" />
-              <div>
-                <p className="text-xs text-muted-foreground">Wind Speed</p>
-                <p className="text-sm font-semibold">{currentConditions.currentWind} km/h</p>
+            <div className="flex items-center space-x-3">
+              <div className="flex-shrink-0">
+                <Wind className="w-5 h-5 text-accent" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-xs text-muted-foreground mb-1">Wind Speed</p>
+                <p className="text-base font-semibold text-foreground">{currentConditions.currentWind} km/h</p>
               </div>
             </div>
-            <div className="flex items-center space-x-2">
-              <Cloud className="w-4 h-4 text-accent" />
-              <div>
-                <p className="text-xs text-muted-foreground">Cloud Cover</p>
-                <p className="text-sm font-semibold">{currentConditions.currentCloud}%</p>
+            <div className="flex items-center space-x-3">
+              <div className="flex-shrink-0">
+                <Cloud className="w-5 h-5 text-accent" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-xs text-muted-foreground mb-1">Cloud Cover</p>
+                <p className="text-base font-semibold text-foreground">{currentConditions.currentCloud}%</p>
               </div>
             </div>
           </div>
@@ -193,36 +201,42 @@ export const WeatherSummary: React.FC = () => {
         )}
 
         {/* 7-Day Forecast */}
-        <div className="grid grid-cols-7 gap-1">
-          {loading ? (
-            Array.from({ length: 7 }).map((_, index) => (
-              <div key={index} className="flex flex-col items-center space-y-2 p-3 rounded-lg bg-muted/30">
-                <div className="w-6 h-6 bg-muted/50 rounded animate-pulse" />
-                <div className="w-8 h-3 bg-muted/50 rounded animate-pulse" />
-                <div className="w-6 h-3 bg-muted/50 rounded animate-pulse" />
-              </div>
-            ))
-          ) : (
-            weatherData.map((day, index) => (
-              <WeatherDay key={index} {...day} />
-            ))
-          )}
+        <div className="overflow-x-auto">
+          <div className="grid grid-cols-7 gap-2 min-w-[600px]">
+            {loading ? (
+              Array.from({ length: 7 }).map((_, index) => (
+                <div key={index} className="flex flex-col items-center space-y-2 p-2 min-h-[120px] rounded-lg bg-muted/30 animate-pulse">
+                  <div className="w-5 h-3 bg-muted/50 rounded" />
+                  <div className="w-5 h-5 bg-muted/50 rounded" />
+                  <div className="w-8 h-8 bg-muted/50 rounded" />
+                  <div className="w-12 h-3 bg-muted/50 rounded" />
+                </div>
+              ))
+            ) : (
+              weatherData.map((day, index) => (
+                <WeatherDay key={index} {...day} />
+              ))
+            )}
+          </div>
         </div>
 
         {/* Weekly Summary */}
-        <div className="flex items-center justify-between p-3 bg-muted/30 rounded-lg">
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 p-4 bg-muted/30 rounded-lg">
           <div className="flex items-center space-x-2">
-            <Droplets className="w-4 h-4 text-accent" />
+            <Droplets className="w-4 h-4 text-accent flex-shrink-0" />
             <span className="text-sm text-muted-foreground">Expected Rain:</span>
-            <span className="text-sm font-semibold text-foreground">{totalPrecipitation.toFixed(1)}mm</span>
+            <span className="text-sm font-semibold text-foreground">
+              {totalPrecipitation > 0 ? `${totalPrecipitation.toFixed(1)}mm` : '0mm'}
+            </span>
           </div>
           <div className="flex items-center space-x-2">
+            <Thermometer className="w-4 h-4 text-warning flex-shrink-0" />
             <span className="text-sm text-muted-foreground">Avg Temp:</span>
             <span className="text-sm font-semibold text-foreground">
               {weatherData.length > 0 
-                ? Math.round(weatherData.reduce((sum, day) => sum + (day.high + day.low) / 2, 0) / weatherData.length)
-                : '--'
-              }°C
+                ? `${Math.round(weatherData.reduce((sum, day) => sum + (day.high + day.low) / 2, 0) / weatherData.length)}°C`
+                : '--°C'
+              }
             </span>
           </div>
         </div>
