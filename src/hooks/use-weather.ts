@@ -54,10 +54,8 @@ export const useWeather = (): UseWeatherReturn => {
         longitude,
         hourly: [
           "temperature_2m", 
-          "rain", 
           "precipitation", 
           "apparent_temperature", 
-          "snowfall", 
           "wind_speed_10m", 
           "cloud_cover", 
           "weather_code"
@@ -87,13 +85,13 @@ export const useWeather = (): UseWeatherReturn => {
             (_, i) => new Date((Number(hourly.time()) + i * hourly.interval() + utcOffsetSeconds) * 1000)
           ),
           temperature_2m: hourly.variables(0)!.valuesArray(),
-          rain: hourly.variables(1)!.valuesArray(),
-          precipitation: hourly.variables(2)!.valuesArray(),
-          apparent_temperature: hourly.variables(3)!.valuesArray(),
-          snowfall: hourly.variables(4)!.valuesArray(),
-          wind_speed_10m: hourly.variables(5)!.valuesArray(),
-          cloud_cover: hourly.variables(6)!.valuesArray(),
-          weather_code: hourly.variables(7)!.valuesArray(),
+          rain: hourly.variables(1)!.valuesArray(), // Using precipitation data
+          precipitation: hourly.variables(1)!.valuesArray(), // Same as rain for compatibility
+          apparent_temperature: hourly.variables(2)!.valuesArray(),
+          snowfall: new Float32Array(hourly.variables(0)!.valuesArray().length), // Not requested, use empty array
+          wind_speed_10m: hourly.variables(3)!.valuesArray(),
+          cloud_cover: hourly.variables(4)!.valuesArray(),
+          weather_code: hourly.variables(5)!.valuesArray(),
         },
         location: {
           latitude: responseLatitude,

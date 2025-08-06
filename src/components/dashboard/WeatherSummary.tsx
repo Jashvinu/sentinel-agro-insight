@@ -90,12 +90,12 @@ export const WeatherSummary: React.FC = () => {
       if (startHour >= data.hourly.time.length) break;
 
       const dayTemps = Array.from(data.hourly.temperature_2m.slice(startHour, endHour));
-      const dayRain = Array.from(data.hourly.rain.slice(startHour, endHour));
+      const dayPrecipitation = Array.from(data.hourly.precipitation.slice(startHour, endHour));
       const dayWeatherCodes = Array.from(data.hourly.weather_code.slice(startHour, endHour));
       
       const high = Math.round(Math.max(...dayTemps));
       const low = Math.round(Math.min(...dayTemps));
-      const precipitation = Math.round(dayRain.reduce((sum, rain) => sum + rain, 0) * 10) / 10;
+      const precipitation = Math.round(dayPrecipitation.reduce((sum, precip) => sum + precip, 0) * 10) / 10;
       const avgWeatherCode = Math.round(dayWeatherCodes.reduce((sum, code) => sum + code, 0) / dayWeatherCodes.length);
       
       const date = data.hourly.time[startHour];
