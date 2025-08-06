@@ -1,15 +1,18 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { 
   Cloud, 
   Sun, 
   CloudRain, 
   Wind,
   Thermometer,
-  Droplets
+  Droplets,
+  RefreshCw,
+  Loader2
 } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { useWeather } from '@/hooks/use-weather';
 
 interface WeatherDayProps {
   day: string;
@@ -45,17 +48,86 @@ const WeatherDay: React.FC<WeatherDayProps> = ({
 );
 
 export const WeatherSummary: React.FC = () => {
-  const weatherData = [
-    { day: 'Today', high: 28, low: 18, icon: Sun, precipitation: 0, condition: 'Sunny' },
-    { day: 'Thu', high: 26, low: 16, icon: CloudRain, precipitation: 2.5, condition: 'Light Rain' },
-    { day: 'Fri', high: 24, low: 15, icon: Cloud, precipitation: 0, condition: 'Cloudy' },
-    { day: 'Sat', high: 27, low: 17, icon: Sun, precipitation: 0, condition: 'Sunny' },
-    { day: 'Sun', high: 29, low: 19, icon: Sun, precipitation: 0, condition: 'Sunny' },
-    { day: 'Mon', high: 25, low: 16, icon: CloudRain, precipitation: 8.2, condition: 'Rain' },
-    { day: 'Tue', high: 23, low: 14, icon: CloudRain, precipitation: 12.1, condition: 'Heavy Rain' },
-  ];
+  const { data, loading, error, fetchWeather } = useWeather();
 
+  // Default location (Bangalore coordinates for agriculture demo)
+  const defaultLatitude = 12.9716;
+  const defaultLongitude = 77.5946;
+
+  useEffect(() => {
+    fetchWeather(defaultLatitude, defaultLongitude);
+  }, [fetchWeather]);
+
+  const getWeatherIcon = (weatherCode: number) => {
+    if (weatherCode <= 1) return Sun; // Clear/Mainly clear
+    if (weatherCode <= 3) return Cloud; // Partly cloudy/Overcast
+    if (weatherCode >= 61 && weatherCode <= 67) return CloudRain; // Rain
+    if (weatherCode >= 80 && weatherCode <= 82) return CloudRain; // Rain showers
+    return Cloud; // Default
+  };
+
+  const getCondition = (weatherCode: number) => {
+    if (weatherCode === 0) return 'Clear';
+    if (weatherCode === 1) return 'Mainly Clear';
+    if (weatherCode === 2) return 'Partly Cloudy';
+    if (weatherCode === 3) return 'Overcast';
+    if (weatherCode >= 61 && weatherCode <= 67) return 'Rain';
+    if (weatherCode >= 80 && weatherCode <= 82) return 'Showers';
+    return 'Cloudy';
+  };
+
+  const processDailyData = () => {
+    if (!data) return [];
+
+    const dailyData = [];
+    const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    
+    // Group hourly data by day (take every 24 hours starting from current time)
+    for (let dayIndex = 0; dayIndex < 7; dayIndex++) {
+      const startHour = dayIndex * 24;
+      const endHour = Math.min((dayIndex + 1) * 24, data.hourly.time.length);
+      
+      if (startHour >= data.hourly.time.length) break;
+
+      const dayTemps = Array.from(data.hourly.temperature_2m.slice(startHour, endHour));
+      const dayRain = Array.from(data.hourly.rain.slice(startHour, endHour));
+      const dayWeatherCodes = Array.from(data.hourly.weather_code.slice(startHour, endHour));
+      
+      const high = Math.round(Math.max(...dayTemps));
+      const low = Math.round(Math.min(...dayTemps));
+      const precipitation = Math.round(dayRain.reduce((sum, rain) => sum + rain, 0) * 10) / 10;
+      const avgWeatherCode = Math.round(dayWeatherCodes.reduce((sum, code) => sum + code, 0) / dayWeatherCodes.length);
+      
+      const date = data.hourly.time[startHour];
+      const dayName = dayIndex === 0 ? 'Today' : days[date.getDay()];
+
+      dailyData.push({
+        day: dayName,
+        high,
+        low,
+        icon: getWeatherIcon(avgWeatherCode),
+        precipitation,
+        condition: getCondition(avgWeatherCode)
+      });
+    }
+
+    return dailyData;
+  };
+
+  const getCurrentConditions = () => {
+    if (!data || data.hourly.time.length === 0) return null;
+
+    const currentTemp = Math.round(data.hourly.temperature_2m[0]);
+    const currentApparent = Math.round(data.hourly.apparent_temperature[0]);
+    const currentWind = Math.round(data.hourly.wind_speed_10m[0] * 3.6); // Convert m/s to km/h
+    const currentCloud = Math.round(data.hourly.cloud_cover[0]);
+
+    return { currentTemp, currentApparent, currentWind, currentCloud };
+  };
+
+  const weatherData = processDailyData();
   const totalPrecipitation = weatherData.reduce((sum, day) => sum + day.precipitation, 0);
+  const currentConditions = getCurrentConditions();
 
   return (
     <Card className="overflow-hidden">
@@ -65,43 +137,76 @@ export const WeatherSummary: React.FC = () => {
             <Cloud className="w-5 h-5 text-accent" />
             <span>7-Day Weather</span>
           </CardTitle>
-          <Badge variant="outline" className="text-xs">
-            Bangalore, IN
-          </Badge>
+          <div className="flex items-center space-x-2">
+            <Badge variant="outline" className="text-xs">
+              {data ? `${data.location.latitude.toFixed(1)}°N ${data.location.longitude.toFixed(1)}°E` : 'Loading...'}
+            </Badge>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => fetchWeather(defaultLatitude, defaultLongitude)}
+              disabled={loading}
+            >
+              {loading ? (
+                <Loader2 className="w-3 h-3 animate-spin" />
+              ) : (
+                <RefreshCw className="w-3 h-3" />
+              )}
+            </Button>
+          </div>
         </div>
       </CardHeader>
       
       <CardContent className="space-y-4">
         {/* Current Conditions */}
-        <div className="grid grid-cols-3 gap-4 p-4 bg-gradient-sky/10 rounded-lg">
-          <div className="flex items-center space-x-2">
-            <Thermometer className="w-4 h-4 text-warning" />
-            <div>
-              <p className="text-xs text-muted-foreground">Temperature</p>
-              <p className="text-sm font-semibold">28°C / 18°C</p>
+        {currentConditions && (
+          <div className="grid grid-cols-3 gap-4 p-4 bg-gradient-sky/10 rounded-lg">
+            <div className="flex items-center space-x-2">
+              <Thermometer className="w-4 h-4 text-warning" />
+              <div>
+                <p className="text-xs text-muted-foreground">Temperature</p>
+                <p className="text-sm font-semibold">{currentConditions.currentTemp}°C</p>
+                <p className="text-xs text-muted-foreground">Feels {currentConditions.currentApparent}°C</p>
+              </div>
+            </div>
+            <div className="flex items-center space-x-2">
+              <Wind className="w-4 h-4 text-accent" />
+              <div>
+                <p className="text-xs text-muted-foreground">Wind Speed</p>
+                <p className="text-sm font-semibold">{currentConditions.currentWind} km/h</p>
+              </div>
+            </div>
+            <div className="flex items-center space-x-2">
+              <Cloud className="w-4 h-4 text-accent" />
+              <div>
+                <p className="text-xs text-muted-foreground">Cloud Cover</p>
+                <p className="text-sm font-semibold">{currentConditions.currentCloud}%</p>
+              </div>
             </div>
           </div>
-          <div className="flex items-center space-x-2">
-            <Wind className="w-4 h-4 text-accent" />
-            <div>
-              <p className="text-xs text-muted-foreground">Wind</p>
-              <p className="text-sm font-semibold">12 km/h NE</p>
-            </div>
+        )}
+
+        {error && (
+          <div className="p-4 bg-destructive/10 border border-destructive/20 rounded-lg">
+            <p className="text-sm text-destructive">Error: {error}</p>
           </div>
-          <div className="flex items-center space-x-2">
-            <Droplets className="w-4 h-4 text-accent" />
-            <div>
-              <p className="text-xs text-muted-foreground">Humidity</p>
-              <p className="text-sm font-semibold">68%</p>
-            </div>
-          </div>
-        </div>
+        )}
 
         {/* 7-Day Forecast */}
         <div className="grid grid-cols-7 gap-1">
-          {weatherData.map((day, index) => (
-            <WeatherDay key={index} {...day} />
-          ))}
+          {loading ? (
+            Array.from({ length: 7 }).map((_, index) => (
+              <div key={index} className="flex flex-col items-center space-y-2 p-3 rounded-lg bg-muted/30">
+                <div className="w-6 h-6 bg-muted/50 rounded animate-pulse" />
+                <div className="w-8 h-3 bg-muted/50 rounded animate-pulse" />
+                <div className="w-6 h-3 bg-muted/50 rounded animate-pulse" />
+              </div>
+            ))
+          ) : (
+            weatherData.map((day, index) => (
+              <WeatherDay key={index} {...day} />
+            ))
+          )}
         </div>
 
         {/* Weekly Summary */}
@@ -109,11 +214,16 @@ export const WeatherSummary: React.FC = () => {
           <div className="flex items-center space-x-2">
             <Droplets className="w-4 h-4 text-accent" />
             <span className="text-sm text-muted-foreground">Expected Rain:</span>
-            <span className="text-sm font-semibold text-foreground">{totalPrecipitation}mm</span>
+            <span className="text-sm font-semibold text-foreground">{totalPrecipitation.toFixed(1)}mm</span>
           </div>
           <div className="flex items-center space-x-2">
             <span className="text-sm text-muted-foreground">Avg Temp:</span>
-            <span className="text-sm font-semibold text-foreground">25°C</span>
+            <span className="text-sm font-semibold text-foreground">
+              {weatherData.length > 0 
+                ? Math.round(weatherData.reduce((sum, day) => sum + (day.high + day.low) / 2, 0) / weatherData.length)
+                : '--'
+              }°C
+            </span>
           </div>
         </div>
       </CardContent>
