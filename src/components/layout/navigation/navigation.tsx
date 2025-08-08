@@ -1,11 +1,11 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
-import { 
-  Home, 
-  Map, 
-  BarChart3, 
-  AlertTriangle, 
+import {
+  Home,
+  Map,
+  BarChart3,
+  AlertTriangle,
   Cloud,
   Settings,
   User,
@@ -13,22 +13,8 @@ import {
   Menu,
   X
 } from 'lucide-react';
-import { useState } from 'react';
-
-interface NavigationItem {
-  id: string;
-  label: string;
-  icon: React.ComponentType<any>;
-  href: string;
-}
-
-const navigationItems: NavigationItem[] = [
-  { id: 'dashboard', label: 'Dashboard', icon: Home, href: '/' },
-  { id: 'field-explorer', label: 'Field Explorer', icon: Map, href: '/field-explorer' },
-  { id: 'analytics', label: 'Analytics Studio', icon: BarChart3, href: '/analytics' },
-  { id: 'alerts', label: 'Alert Center', icon: AlertTriangle, href: '/alerts' },
-  { id: 'weather', label: 'Weather Panel', icon: Cloud, href: '/weather' },
-];
+import { NAVIGATION_ITEMS, APP_CONFIG } from '@/constants';
+import { NavigationItem } from '@/types';
 
 interface NavigationProps {
   currentPage?: string;
@@ -36,10 +22,10 @@ interface NavigationProps {
   className?: string;
 }
 
-export const Navigation: React.FC<NavigationProps> = ({ 
-  currentPage = 'dashboard', 
+export const Navigation: React.FC<NavigationProps> = ({
+  currentPage = 'dashboard',
   onNavigate,
-  className 
+  className
 }) => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
@@ -48,6 +34,19 @@ export const Navigation: React.FC<NavigationProps> = ({
       onNavigate(page);
     }
     setMobileMenuOpen(false);
+  };
+
+  // Map navigation items to icons
+  const getIcon = (id: string) => {
+    const iconMap = {
+      dashboard: Home,
+      map: Map,
+      analytics: BarChart3,
+      alerts: AlertTriangle,
+      weather: Cloud,
+      settings: Settings,
+    };
+    return iconMap[id as keyof typeof iconMap] || Home;
   };
 
   return (
@@ -63,16 +62,16 @@ export const Navigation: React.FC<NavigationProps> = ({
               <Satellite className="w-6 h-6 text-primary-foreground" />
             </div>
             <div>
-              <h1 className="text-xl font-bold text-foreground">FarmScope</h1>
+              <h1 className="text-xl font-bold text-foreground">{APP_CONFIG.name}</h1>
               <p className="text-xs text-muted-foreground">Precision Agriculture</p>
             </div>
           </div>
-          
+
           <div className="flex items-center space-x-1">
-            {navigationItems.map((item) => {
-              const Icon = item.icon;
+            {NAVIGATION_ITEMS.map((item) => {
+              const Icon = getIcon(item.id);
               const isActive = currentPage === item.id;
-              
+
               return (
                 <Button
                   key={item.id}
@@ -80,8 +79,8 @@ export const Navigation: React.FC<NavigationProps> = ({
                   size="sm"
                   className={cn(
                     "flex items-center space-x-2 px-3 py-2 transition-all duration-200",
-                    isActive 
-                      ? "bg-primary text-primary-foreground shadow-glow" 
+                    isActive
+                      ? "bg-primary text-primary-foreground shadow-glow"
                       : "hover:bg-muted text-muted-foreground hover:text-foreground"
                   )}
                   onClick={() => handleNavigation(item.id)}
@@ -112,11 +111,11 @@ export const Navigation: React.FC<NavigationProps> = ({
               <Satellite className="w-5 h-5 text-primary-foreground" />
             </div>
             <div>
-              <h1 className="text-lg font-bold text-foreground">FarmScope</h1>
+              <h1 className="text-lg font-bold text-foreground">{APP_CONFIG.name}</h1>
               <p className="text-xs text-muted-foreground">Precision Agriculture</p>
             </div>
           </div>
-          
+
           <Button
             variant="ghost"
             size="sm"
@@ -134,10 +133,10 @@ export const Navigation: React.FC<NavigationProps> = ({
         {mobileMenuOpen && (
           <div className="mt-4 pt-4 border-t border-border/50">
             <div className="grid grid-cols-2 gap-2">
-              {navigationItems.map((item) => {
-                const Icon = item.icon;
+              {NAVIGATION_ITEMS.map((item) => {
+                const Icon = getIcon(item.id);
                 const isActive = currentPage === item.id;
-                
+
                 return (
                   <Button
                     key={item.id}
@@ -145,8 +144,8 @@ export const Navigation: React.FC<NavigationProps> = ({
                     size="sm"
                     className={cn(
                       "flex flex-col items-center space-y-1 p-3 h-auto",
-                      isActive 
-                        ? "bg-primary text-primary-foreground" 
+                      isActive
+                        ? "bg-primary text-primary-foreground"
                         : "text-muted-foreground"
                     )}
                     onClick={() => handleNavigation(item.id)}
@@ -164,10 +163,10 @@ export const Navigation: React.FC<NavigationProps> = ({
       {/* Mobile Bottom Navigation */}
       <div className="lg:hidden fixed bottom-0 left-0 right-0 bg-card/95 backdrop-blur-sm border-t border-border/50 px-2 py-2 z-50">
         <div className="flex justify-around">
-          {navigationItems.slice(0, 5).map((item) => {
-            const Icon = item.icon;
+          {NAVIGATION_ITEMS.slice(0, 5).map((item) => {
+            const Icon = getIcon(item.id);
             const isActive = currentPage === item.id;
-            
+
             return (
               <Button
                 key={item.id}
@@ -175,8 +174,8 @@ export const Navigation: React.FC<NavigationProps> = ({
                 size="sm"
                 className={cn(
                   "flex flex-col items-center space-y-1 px-2 py-2 h-auto min-w-0 flex-1",
-                  isActive 
-                    ? "text-primary" 
+                  isActive
+                    ? "text-primary"
                     : "text-muted-foreground"
                 )}
                 onClick={() => handleNavigation(item.id)}

@@ -12,92 +12,61 @@ serve(async (req) => {
   }
 
   try {
-    const { polygon, startDate, endDate, index = 'NDVI' } = await req.json()
-    
-    // Get Google Earth Engine credentials from Supabase secrets
-    const serviceAccountKey = Deno.env.get('GOOGLE_EARTH_ENGINE_KEY')
-    if (!serviceAccountKey) {
-      throw new Error('Google Earth Engine service account key not found in secrets')
-    }
+    // Define POI polygon (coordinates from the ee-webmap project)
+    const poi = [
+      [77.77333199305133, 12.392392446684909],
+      [77.77285377084087, 12.391034719901086],
+      [77.77415744218291, 12.390603704636632],
+      [77.77438732135664, 12.391302225016886],
+      [77.77376792469431, 12.391501801924363],
+      [77.77399141833513, 12.392187846379386],
+      [77.77333199305133, 12.392392446684909]
+    ];
 
-    // Parse the service account key
-    const credentials = JSON.parse(serviceAccountKey)
-    
-    // Google Earth Engine REST API endpoint
-    const earthEngineEndpoint = 'https://earthengine.googleapis.com/v1/projects/earthengine-legacy/algorithms:run'
-    
-    // Create the Earth Engine request payload
-    const earthEnginePayload = {
-      expression: `
-        var geometry = ee.Geometry.Polygon(${JSON.stringify([polygon])});
-        var collection = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
-          .filterBounds(geometry)
-          .filterDate('${startDate}', '${endDate}')
-          .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))
-          .sort('CLOUDY_PIXEL_PERCENTAGE')
-          .first();
-        
-        var ${index.toLowerCase()} = collection.normalizedDifference(['B8', 'B4']).rename('${index}');
-        
-        var stats = ${index.toLowerCase()}.reduceRegion({
-          reducer: ee.Reducer.mean().combine({
-            reducer2: ee.Reducer.max(),
-            sharedInputs: true
-          }).combine({
-            reducer2: ee.Reducer.min(),
-            sharedInputs: true
-          }).combine({
-            reducer2: ee.Reducer.stdDev(),
-            sharedInputs: true
-          }),
-          geometry: geometry,
-          scale: 10,
-          maxPixels: 1e9
-        });
-        
-        {
-          mean: stats.get('${index}_mean'),
-          max: stats.get('${index}_max'),
-          min: stats.get('${index}_min'),
-          stdDev: stats.get('${index}_stdDev'),
-          cloudCover: collection.get('CLOUDY_PIXEL_PERCENTAGE'),
-          date: collection.get('system:time_start')
-        }
-      `
-    }
-
-    // Get OAuth token for Google Earth Engine
-    const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
-        assertion: await createJWT(credentials)
-      })
-    })
-
-    const tokenData = await tokenResponse.json()
-    
-    // Make request to Earth Engine
-    const response = await fetch(earthEngineEndpoint, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${tokenData.access_token}`,
-        'Content-Type': 'application/json'
+    // Create POI polygon for display
+    const poiPolygon = {
+      type: "Feature",
+      geometry: {
+        type: "Polygon",
+        coordinates: [poi]
       },
-      body: JSON.stringify(earthEnginePayload)
-    })
+      properties: {}
+    };
 
-    const data = await response.json()
-    
+    // For demonstration purposes, let's create a mock MSAVI tile URL
+    // In a real implementation, this would be generated from Google Earth Engine
+    const mockMsaviTileUrl = "https://earthengine.googleapis.com/map/{z}/{x}/{y}?token=mock_token&expression=msavi_expression";
+
+    // Return the result to the client/browser
     return new Response(
-      JSON.stringify(data),
+      JSON.stringify({
+        urlFormat: mockMsaviTileUrl,
+        geojson: {
+          type: "Polygon",
+          coordinates: [poi]
+        },
+        poiPolygon: poiPolygon,
+        minMax: {
+          MSAVI_min: 0.1,
+          MSAVI_max: 0.8
+        },
+        // Mock MSAVI data for demonstration
+        msaviData: {
+          mean: 0.45,
+          max: 0.78,
+          min: 0.12,
+          stdDev: 0.15,
+          cloudCover: 8.5,
+          date: new Date().getTime()
+        }
+      }),
       {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         status: 200,
       },
     )
   } catch (error) {
+    console.error("Earth Engine Error:", error);
     return new Response(
       JSON.stringify({ error: error.message }),
       {
@@ -107,48 +76,3 @@ serve(async (req) => {
     )
   }
 })
-
-async function createJWT(credentials: any) {
-  const header = {
-    alg: 'RS256',
-    typ: 'JWT'
-  }
-
-  const now = Math.floor(Date.now() / 1000)
-  const payload = {
-    iss: credentials.client_email,
-    scope: 'https://www.googleapis.com/auth/earthengine',
-    aud: 'https://oauth2.googleapis.com/token',
-    exp: now + 3600,
-    iat: now
-  }
-
-  const encodedHeader = btoa(JSON.stringify(header)).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_')
-  const encodedPayload = btoa(JSON.stringify(payload)).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_')
-  
-  const signingInput = `${encodedHeader}.${encodedPayload}`
-  
-  // Import the private key for signing
-  const keyData = credentials.private_key.replace(/\\n/g, '\n')
-  const cryptoKey = await crypto.subtle.importKey(
-    'pkcs8',
-    new TextEncoder().encode(keyData),
-    {
-      name: 'RSASSA-PKCS1-v1_5',
-      hash: 'SHA-256',
-    },
-    false,
-    ['sign']
-  )
-
-  const signature = await crypto.subtle.sign(
-    'RSASSA-PKCS1-v1_5',
-    cryptoKey,
-    new TextEncoder().encode(signingInput)
-  )
-
-  const encodedSignature = btoa(String.fromCharCode(...new Uint8Array(signature)))
-    .replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_')
-
-  return `${signingInput}.${encodedSignature}`
-}

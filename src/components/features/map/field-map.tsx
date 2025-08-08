@@ -1,27 +1,37 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
-import { bbox } from '@turf/turf';
-import { cn } from '@/lib/utils';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { useToast } from '@/hooks/use-toast';
 import {
+  Satellite,
   Map,
   Layers,
-  ZoomIn,
-  ZoomOut,
-  RotateCcw,
-  Calendar,
   Play,
   Pause,
-  Key,
-  Satellite,
-  Loader2
+  RefreshCw,
+  Download,
+  Info,
+  AlertCircle
 } from 'lucide-react';
+import { useToast } from '@/hooks/use-toast';
+import { bbox } from '@turf/turf';
+import { cn } from '@/lib/utils';
+
+interface EarthEngineData {
+  urlFormat: string;
+  geojson: Record<string, unknown>;
+  poiPolygon: Record<string, unknown>;
+  msaviData?: {
+    mean: number;
+    max: number;
+    min: number;
+    stdDev: number;
+    cloudCover: number;
+    date: number;
+  };
+}
 
 interface FieldMapProps {
   className?: string;
@@ -35,9 +45,8 @@ export const FieldMap: React.FC<FieldMapProps> = ({
   const [isPlaying, setIsPlaying] = useState(false);
   const [selectedLayer, setSelectedLayer] = useState('MSAVI');
   const [mapContainer, setMapContainer] = useState<HTMLDivElement | null>(null);
-  const [earthEngineData, setEarthEngineData] = useState<any>(null);
+  const [earthEngineData, setEarthEngineData] = useState<EarthEngineData | null>(null);
   const [loading, setLoading] = useState(false);
-  const [retryCount, setRetryCount] = useState(0);
   const map = useRef<maplibregl.Map | null>(null);
   const { toast } = useToast();
 
@@ -52,29 +61,17 @@ export const FieldMap: React.FC<FieldMapProps> = ({
     { id: 'NDWI', name: 'NDWI', color: 'bg-warning', description: 'Normalized Difference Water Index' },
   ];
 
-  const fetchEarthEngineData = async () => {
+  const fetchEarthEngineData = useCallback(async () => {
     setLoading(true);
     try {
-      // Fetch data from the Node.js server with timeout
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
-
-      const response = await fetch('http://localhost:3001/api/ee', {
-        signal: controller.signal
-      });
-
-      clearTimeout(timeoutId);
+      // Fetch data from the Node.js server
+      const response = await fetch('http://localhost:3001/api/ee');
 
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
 
       const data = await response.json();
-
-      // Validate that we received the expected data structure
-      if (!data.urlFormat || !data.geojson || !data.poiPolygon) {
-        throw new Error('Invalid data format received from server');
-      }
 
       // Add mock MSAVI data for display purposes
       const earthEngineData = {
@@ -90,7 +87,6 @@ export const FieldMap: React.FC<FieldMapProps> = ({
       };
 
       setEarthEngineData(earthEngineData);
-      setRetryCount(0); // Reset retry count on success
 
       // If it is good then add the layer url to the map
       if (map.current) {
@@ -147,95 +143,84 @@ export const FieldMap: React.FC<FieldMapProps> = ({
               type: "fill",
               source: "poi-polygon",
               paint: {
-                "fill-color": "#00ff00",
-                "fill-opacity": 0.3
+                "fill-color": "transparent",
+                "fill-opacity": 0.1
               }
             });
 
-            // Add POI polygon outline
+            // Add POI polygon outline layer
             map.current.addLayer({
               id: "poi-polygon-outline",
               type: "line",
               source: "poi-polygon",
               paint: {
-                "line-color": "#00ff00",
-                "line-width": 2
+                "line-color": "#3b82f6",
+                "line-width": 2,
+                "line-dasharray": [2, 2]
               }
             });
           }
 
-          // Fit map to the POI polygon
+          // Fit map to bounds
           map.current.fitBounds(bounds as [number, number, number, number], {
             padding: 50,
             duration: 1000
           });
         }
       }
-
-      toast({
-        title: "Earth Engine data loaded",
-        description: `Retrieved ${selectedLayer} data from Google Earth Engine`,
-      });
     } catch (error) {
-      console.error("Error loading Earth Engine data:", error);
-
-      // Auto-retry logic (max 3 attempts)
-      if (retryCount < 3) {
-        setRetryCount(prev => prev + 1);
-        setTimeout(() => {
-          fetchEarthEngineData();
-        }, 2000); // Wait 2 seconds before retry
-        return;
-      }
-
-      let errorMessage = "Please try again. If the problem persists, check your internet connection.";
-
-      if (error.name === 'AbortError') {
-        errorMessage = "Request timed out. Please try again.";
-      } else if (error.message.includes('Failed to fetch')) {
-        errorMessage = "Cannot connect to server. Please check if the server is running.";
-      } else if (error.message.includes('Invalid data format')) {
-        errorMessage = "Server returned invalid data. Please try again.";
-      }
-
+      console.error('Error fetching Earth Engine data:', error);
       toast({
-        title: "Failed to load satellite data",
-        description: errorMessage,
+        title: "Error",
+        description: "Failed to load satellite data. Please try again.",
         variant: "destructive",
       });
-
-      // Reset retry count after max attempts
-      setRetryCount(0);
     } finally {
       setLoading(false);
     }
-  };
+  }, [toast]);
 
-  const initializeMap = () => {
-    if (!mapContainer) return;
+  const initializeMap = useCallback(() => {
+    if (!mapContainer || map.current) return;
 
-    // Load new map - centered on the coordinates in India
     map.current = new maplibregl.Map({
       container: mapContainer,
-      zoom: 15, // Higher zoom for the smaller area
-      center: [77.7735, 12.3915], // Center on the POI coordinates
-      style: "https://demotiles.maplibre.org/style.json",
+      style: {
+        version: 8,
+        sources: {
+          'osm': {
+            type: 'raster',
+            tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
+            tileSize: 256,
+            attribution: '© OpenStreetMap contributors'
+          }
+        },
+        layers: [
+          {
+            id: 'osm',
+            type: 'raster',
+            source: 'osm',
+            minzoom: 0,
+            maxzoom: 22
+          }
+        ]
+      },
+      center: [77.77333199305133, 12.392392446684909],
+      zoom: 15,
+      maxZoom: 20,
+      minZoom: 10
     });
 
-    // When map is loaded fetch the tile and add it to the map
-    map.current.on("load", async () => {
-      await fetchEarthEngineData();
+    map.current.on('load', () => {
+      fetchEarthEngineData();
     });
-
-    // Add navigation controls
-    map.current.addControl(new maplibregl.NavigationControl(), 'top-right');
-  };
+  }, [mapContainer, fetchEarthEngineData]);
 
   useEffect(() => {
     if (mapContainer && !map.current) {
       initializeMap();
     }
-  }, [mapContainer]);
+  }, [mapContainer, initializeMap]);
 
   useEffect(() => {
     return () => {
@@ -357,11 +342,11 @@ export const FieldMap: React.FC<FieldMapProps> = ({
           <div className="flex items-center space-x-2">
             <Button variant="outline" size="sm" disabled={loading} onClick={fetchEarthEngineData}>
               {loading ? (
-                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
               ) : (
-                <Calendar className="w-4 h-4 mr-2" />
+                <Info className="w-4 h-4 mr-2" />
               )}
-              {loading ? 'Loading...' : 'Refresh Data'}
+              Refresh Data
             </Button>
           </div>
         </div>

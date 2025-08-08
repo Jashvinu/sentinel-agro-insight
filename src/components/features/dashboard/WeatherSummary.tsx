@@ -2,10 +2,10 @@ import React, { useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { 
-  Cloud, 
-  Sun, 
-  CloudRain, 
+import {
+  Cloud,
+  Sun,
+  CloudRain,
   Wind,
   Thermometer,
   Droplets,
@@ -18,18 +18,18 @@ interface WeatherDayProps {
   day: string;
   high: number;
   low: number;
-  icon: React.ComponentType<any>;
+  icon: React.ComponentType<{ className?: string }>;
   precipitation: number;
   condition: string;
 }
 
-const WeatherDay: React.FC<WeatherDayProps> = ({ 
-  day, 
-  high, 
-  low, 
-  icon: Icon, 
+const WeatherDay: React.FC<WeatherDayProps> = ({
+  day,
+  high,
+  low,
+  icon: Icon,
   precipitation,
-  condition 
+  condition
 }) => (
   <div className="flex flex-col items-center space-y-2 p-3 rounded-lg bg-muted/30 hover:bg-muted/50 transition-colors">
     <p className="text-xs font-medium text-muted-foreground">{day}</p>
@@ -81,23 +81,23 @@ export const WeatherSummary: React.FC = () => {
 
     const dailyData = [];
     const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-    
+
     // Group hourly data by day (take every 24 hours starting from current time)
     for (let dayIndex = 0; dayIndex < 7; dayIndex++) {
       const startHour = dayIndex * 24;
       const endHour = Math.min((dayIndex + 1) * 24, data.hourly.time.length);
-      
+
       if (startHour >= data.hourly.time.length) break;
 
       const dayTemps = Array.from(data.hourly.temperature_2m.slice(startHour, endHour));
       const dayPrecipitation = Array.from(data.hourly.precipitation.slice(startHour, endHour));
       const dayWeatherCodes = Array.from(data.hourly.weather_code.slice(startHour, endHour));
-      
+
       const high = Math.round(Math.max(...dayTemps));
       const low = Math.round(Math.min(...dayTemps));
       const precipitation = Math.round(dayPrecipitation.reduce((sum, precip) => sum + precip, 0) * 10) / 10;
       const avgWeatherCode = Math.round(dayWeatherCodes.reduce((sum, code) => sum + code, 0) / dayWeatherCodes.length);
-      
+
       const date = data.hourly.time[startHour];
       const dayName = dayIndex === 0 ? 'Today' : days[date.getDay()];
 
@@ -156,7 +156,7 @@ export const WeatherSummary: React.FC = () => {
           </div>
         </div>
       </CardHeader>
-      
+
       <CardContent className="space-y-4">
         {/* Current Conditions */}
         {currentConditions && (
@@ -219,7 +219,7 @@ export const WeatherSummary: React.FC = () => {
           <div className="flex items-center space-x-2">
             <span className="text-sm text-muted-foreground">Avg Temp:</span>
             <span className="text-sm font-semibold text-foreground">
-              {weatherData.length > 0 
+              {weatherData.length > 0
                 ? Math.round(weatherData.reduce((sum, day) => sum + (day.high + day.low) / 2, 0) / weatherData.length)
                 : '--'
               }°C

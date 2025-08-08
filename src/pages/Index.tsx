@@ -1,14 +1,14 @@
 import React, { useState } from 'react';
-import { Navigation } from '@/components/ui/navigation';
-import { DashboardKPIs } from '@/components/dashboard/DashboardKPIs';
-import { WeatherSummary } from '@/components/dashboard/WeatherSummary';
-import { AlertsOverview } from '@/components/dashboard/AlertsOverview';
-import { FieldMap } from '@/components/ui/field-map';
+import { Navigation } from '@/components/layout/navigation/navigation';
+import { DashboardKPIs } from '@/components/features/dashboard/DashboardKPIs';
+import { WeatherSummary } from '@/components/features/dashboard/WeatherSummary';
+import { AlertsOverview } from '@/components/features/dashboard/AlertsOverview';
+import { FieldMap } from '@/components/features/map/field-map';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { 
-  Satellite, 
+import {
+  Satellite,
   Calendar,
   Download,
   Filter,
@@ -16,6 +16,8 @@ import {
   TrendingUp,
   BarChart3
 } from 'lucide-react';
+import { APP_CONFIG, DATA_SOURCES, FIELD_BOUNDARIES } from '@/constants';
+import { formatDateTime } from '@/utils';
 import satelliteHero from '@/assets/satellite-hero.jpg';
 
 const Index = () => {
@@ -25,12 +27,12 @@ const Index = () => {
     <div className="min-h-screen bg-background pb-20 lg:pb-0">
       {/* Navigation */}
       <Navigation currentPage={currentPage} onNavigate={setCurrentPage} />
-      
+
       {/* Main Content */}
       <main className="px-4 lg:px-6 py-6 space-y-6">
         {/* Hero Section */}
         <div className="relative overflow-hidden rounded-xl bg-gradient-satellite p-8 text-white">
-          <div 
+          <div
             className="absolute inset-0 bg-cover bg-center opacity-30"
             style={{ backgroundImage: `url(${satelliteHero})` }}
           />
@@ -39,17 +41,17 @@ const Index = () => {
               <div className="space-y-3">
                 <div className="flex items-center space-x-2">
                   <Satellite className="w-6 h-6" />
-                  <h1 className="text-2xl lg:text-3xl font-bold">FarmScope Analytics</h1>
+                  <h1 className="text-2xl lg:text-3xl font-bold">{APP_CONFIG.name}</h1>
                 </div>
                 <p className="text-white/90 text-lg">
-                  Precision agriculture platform monitoring crop health with Sentinel-2 satellite imagery
+                  {APP_CONFIG.description}
                 </p>
                 <div className="flex items-center space-x-4 text-sm">
                   <div className="flex items-center space-x-1">
                     <div className="w-2 h-2 bg-success rounded-full animate-pulse" />
                     <span>Real-time data</span>
                   </div>
-                  <span>Field: 77.773°E, 12.392°N</span>
+                  <span>Field: {FIELD_BOUNDARIES.coordinates[0][1]}°E, {FIELD_BOUNDARIES.coordinates[0][0]}°N</span>
                   <span>Resolution: 10m/pixel</span>
                 </div>
               </div>
@@ -80,7 +82,7 @@ const Index = () => {
           {/* Weather Summary */}
           <div className="space-y-6">
             <WeatherSummary />
-            
+
             {/* Quick Stats */}
             <Card>
               <CardHeader className="pb-3">
@@ -108,7 +110,7 @@ const Index = () => {
                     <p className="text-xs text-muted-foreground">Clear Days</p>
                   </div>
                 </div>
-                
+
                 <Button variant="outline" className="w-full" size="sm">
                   <BarChart3 className="w-4 h-4 mr-2" />
                   View Detailed Analytics
@@ -127,12 +129,14 @@ const Index = () => {
             <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between space-y-2 lg:space-y-0">
               <div className="flex items-center space-x-4 text-sm text-muted-foreground">
                 <span>Data Sources:</span>
-                <Badge variant="outline">Sentinel-2 L2A</Badge>
-                <Badge variant="outline">ERA5-Land</Badge>
-                <Badge variant="outline">CHIRPS v2</Badge>
+                {DATA_SOURCES.map((source) => (
+                  <Badge key={source.name} variant="outline">
+                    {source.name}
+                  </Badge>
+                ))}
               </div>
               <div className="flex items-center space-x-4 text-sm text-muted-foreground">
-                <span>Last Updated: 2024-01-15 14:30 UTC</span>
+                <span>Last Updated: {formatDateTime(new Date())} UTC</span>
                 <div className="flex items-center space-x-1">
                   <div className="w-2 h-2 bg-success rounded-full" />
                   <span>All systems operational</span>
