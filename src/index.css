@@ -143,3 +143,20 @@ All colors MUST be HSL.
     font-family: 'Inter', sans-serif;
   }
 }
+
+/* Custom scrollbar utilities for horizontal scrolling */
+@layer utilities {
+  .scrollbar-hide {
+
+    /* Hide scrollbar for Chrome, Safari and Opera */
+    &::-webkit-scrollbar {
+      display: none;
+    }
+
+    /* Hide scrollbar for IE, Edge and Firefox */
+    -ms-overflow-style: none;
+    /* IE and Edge */
+    scrollbar-width: none;
+    /* Firefox */
+  }
+}

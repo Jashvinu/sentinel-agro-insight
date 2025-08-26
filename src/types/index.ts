@@ -14,6 +14,50 @@ export interface NavigationItem {
     children?: NavigationItem[];
 }
 
+// Agricultural Index Types
+export interface AgriculturalIndex {
+    id: string;
+    name: string;
+    category: 'NPK' | 'Salinity' | 'pH' | 'Moisture' | 'Carbon' | 'Vegetation' | 'Water';
+    unit: string;
+    description: string;
+    formulas: Record<string, string>;
+    ranges: Record<string, {
+        min: number;
+        max: number;
+        color: string;
+        status: string;
+    }>;
+    accuracy: string;
+    requiresCalibration: boolean;
+}
+
+export interface IndexCalculation {
+    indexId: string;
+    value: number;
+    unit: string;
+    status: string;
+    color: string;
+    confidence: number;
+    timestamp: string;
+    requiresCalibration: boolean;
+}
+
+export interface NPKData {
+    nitrogen: IndexCalculation;
+    phosphorus: IndexCalculation;
+    potassium: IndexCalculation;
+}
+
+export interface SoilHealthData {
+    npk: NPKData;
+    salinity: IndexCalculation;
+    ph: IndexCalculation;
+    moisture: IndexCalculation;
+    carbon: IndexCalculation;
+    vegetation: Record<string, IndexCalculation>;
+}
+
 // Dashboard Types
 export interface KPICard {
     id: string;

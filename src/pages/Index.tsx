@@ -4,6 +4,7 @@ import { DashboardKPIs } from '@/components/features/dashboard/DashboardKPIs';
 import { WeatherSummary } from '@/components/features/dashboard/WeatherSummary';
 import { AlertsOverview } from '@/components/features/dashboard/AlertsOverview';
 import { FieldMap } from '@/components/features/map/field-map';
+import { AgriculturalIndices } from '@/components/features/dashboard/AgriculturalIndices';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -119,6 +120,9 @@ const Index = () => {
             </Card>
           </div>
         </div>
+
+        {/* Agricultural Indices Dashboard */}
+        <AgriculturalIndices />
 
         {/* Recent Alerts */}
         <AlertsOverview />

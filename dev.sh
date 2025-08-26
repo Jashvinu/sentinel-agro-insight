@@ -1,9 +1,9 @@
 #!/bin/bash
 
-# Development script for Sentinel Agro Insight
+# Development script for wrkFarm
 # This script runs both the Node.js server and Vite development server
 
-echo "🚀 Starting Sentinel Agro Insight Development Environment"
+echo "🚀 Starting wrkFarm Development Environment"
 
 # Function to cleanup background processes
 cleanup() {

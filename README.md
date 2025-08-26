@@ -1,4 +1,4 @@
-# Sentinel Agro Insight
+# wrkFarm
 
 A precision agriculture platform that monitors crop health using Sentinel-2 satellite imagery and Earth Engine integration.
 
@@ -23,8 +23,8 @@ A precision agriculture platform that monitors crop health using Sentinel-2 sate
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com/your-username/sentinel-agro-insight.git
-   cd sentinel-agro-insight
+   git clone https://github.com/your-username/wrkfarm.git
+   cd wrkfarm
    ```
 
 2. **Install dependencies**
@@ -67,7 +67,7 @@ The application will be available at `http://localhost:5173`
 ## 📁 Project Structure
 
 ```
-sentinel-agro-insight/
+wrkfarm/
 ├── src/
 │   ├── components/
 │   │   ├── features/           # Feature-specific components
@@ -87,7 +87,6 @@ sentinel-agro-insight/
 │   ├── assets/               # Static assets
 │   └── lib/                  # Library configurations
 ├── public/                   # Public assets
-├── supabase/                 # Supabase functions
 └── server.js                 # Express server
 ```
 
