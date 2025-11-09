@@ -1,9 +1,18 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react';
-import maplibregl from 'maplibre-gl';
-import 'maplibre-gl/dist/maplibre-gl.css';
+import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
+import { MapContainer, TileLayer, GeoJSON, useMap } from 'react-leaflet';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+  DialogClose,
+} from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
 import {
   Satellite,
   RefreshCw,
@@ -12,8 +21,14 @@ import {
   Thermometer,
   Droplets,
   TreePine,
-  Waves
+  Waves,
+  MapPinned,
+  Download,
+  Save,
+  ChevronDown
 } from 'lucide-react';
+import L from 'leaflet';
+import 'leaflet-draw';
 import { useToast } from '@/hooks/use-toast';
 import { bbox } from '@turf/turf';
 import { cn } from '@/lib/utils';
@@ -35,6 +50,16 @@ interface CachedMapData {
   [index: string]: EarthEngineData;
 }
 
+interface SavedPolygon {
+  id: string;
+  name: string;
+  geojson: any;
+  createdAt: string;
+  indices?: {
+    [index: string]: EarthEngineData;
+  };
+}
+
 interface FieldMapProps {
   className?: string;
   height?: string;
@@ -44,12 +69,17 @@ export const FieldMap: React.FC<FieldMapProps> = ({
   className,
   height = "h-96"
 }) => {
-  const [mapContainer, setMapContainer] = useState<HTMLDivElement | null>(null);
   const [earthEngineData, setEarthEngineData] = useState<EarthEngineData | null>(null);
   const [loading, setLoading] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState('ndvi');
   const [mapCache, setMapCache] = useState<CachedMapData>({});
-  const map = useRef<maplibregl.Map | null>(null);
+  const [isDrawing, setIsDrawing] = useState(false);
+  const [savedPolygons, setSavedPolygons] = useState<SavedPolygon[]>([]);
+  const [showNameDialog, setShowNameDialog] = useState(false);
+  const [polygonName, setPolygonName] = useState('');
+  const [pendingPolygon, setPendingPolygon] = useState<L.Polygon | null>(null);
+  const [currentPolygonId, setCurrentPolygonId] = useState<string | null>(null);
+  const [selectedFarmId, setSelectedFarmId] = useState<string | null>(null);
   const { toast } = useToast();
 
   // Helper function to handle index selection with cache awareness
@@ -65,29 +95,53 @@ export const FieldMap: React.FC<FieldMapProps> = ({
     }
   }, [mapCache]);
 
-  // Earth engine layer id
-  const eeLayerId = "ee-layer";
-  const boundingBoxId = "bounding-box";
+  // Leaflet base tile
+  const baseTileUrl = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
 
   const fetchEarthEngineData = useCallback(async () => {
     // Check if data is already cached for this index
     if (mapCache[selectedIndex]) {
       console.log(`Using cached data for ${selectedIndex}`);
       setEarthEngineData(mapCache[selectedIndex]);
-      updateMapLayer(mapCache[selectedIndex]);
       return;
     }
 
     setLoading(true);
     try {
-      // Fetch data from the Node.js server with the selected index
-      const response = await fetch(`/api/ee?index=${selectedIndex}`);
+      // Require API base URL via env to avoid mismatched origins (Firebase vs Vercel)
+      const apiBase = (import.meta as any).env?.VITE_API_BASE_URL;
+      if (!apiBase) {
+        throw new Error(
+          'VITE_API_BASE_URL is not set. Set it to your deployed API URL (e.g., https://your-vercel-app.vercel.app).'
+        );
+      }
+      console.log('[FieldMap] API base:', apiBase);
+      // Quick health check to provide clearer errors
+      try {
+        const health = await fetch(`${apiBase}/api/health`, { method: 'GET' });
+        if (!health.ok) {
+          const body = await health.text();
+          throw new Error(`API health check failed (${health.status}). ${body}`);
+        }
+      } catch (e: any) {
+        throw new Error(`Cannot reach API at ${apiBase}. ${e?.message || e}`);
+      }
+      // Fetch data from the server with the selected index
+      const requestUrl = `${apiBase}/api/agricultural-indices?index=${selectedIndex}`;
+      console.log('[FieldMap] Fetching:', requestUrl);
+      const response = await fetch(requestUrl);
 
       if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+        const body = await response.text();
+        throw new Error(`Indices request failed (${response.status}). ${body}`);
       }
 
       const data = await response.json();
+
+      // Validate that we received the expected data structure
+      if (!data.urlFormat || !data.geojson || !data.poiPolygon) {
+        throw new Error('Invalid data format received from server');
+      }
 
       // Add mock data for display purposes
       const earthEngineData = {
@@ -103,13 +157,12 @@ export const FieldMap: React.FC<FieldMapProps> = ({
       }));
 
       setEarthEngineData(earthEngineData);
-      updateMapLayer(earthEngineData);
 
     } catch (error) {
       console.error('Error fetching Earth Engine data:', error);
       toast({
-        title: "Error",
-        description: "Failed to load satellite data. Please try again.",
+        title: "Satellite data error",
+        description: error instanceof Error ? error.message : "Failed to load satellite data.",
         variant: "destructive",
       });
     } finally {
@@ -117,154 +170,438 @@ export const FieldMap: React.FC<FieldMapProps> = ({
     }
   }, [selectedIndex, toast, mapCache]);
 
-  const initializeMap = useCallback(() => {
-    if (!mapContainer || map.current) return;
-
-    map.current = new maplibregl.Map({
-      container: mapContainer,
-      style: "https://demotiles.maplibre.org/style.json",
-      center: [77.77333199305133, 12.392392446684909],
-      zoom: 15,
-      maxZoom: 20,
-      minZoom: 10
-    });
-
-    map.current.on('load', () => {
-      fetchEarthEngineData();
-    });
-  }, [mapContainer, fetchEarthEngineData]);
-
+  // Initialize default "Jash farm" polygon and load saved polygons from localStorage
   useEffect(() => {
-    if (mapContainer && !map.current) {
-      initializeMap();
+    const stored = localStorage.getItem('savedPolygons');
+    let polygons: SavedPolygon[] = [];
+    
+    if (stored) {
+      try {
+        polygons = JSON.parse(stored);
+      } catch (e) {
+        console.error('Failed to load saved polygons:', e);
+      }
     }
-  }, [mapContainer, initializeMap]);
+
+    // Check if "Jash farm" already exists
+    const jashFarmExists = polygons.some(p => p.name === 'Jash farm');
+    
+    if (!jashFarmExists) {
+      // Create default "Jash farm" polygon
+      const defaultPolygon: SavedPolygon = {
+        id: 'jash-farm-default',
+        name: 'Jash farm',
+        geojson: {
+          type: 'Feature',
+          geometry: {
+            type: 'Polygon',
+            coordinates: [[
+              [77.77333199305133, 12.392392446684909],
+              [77.77285377084087, 12.391034719901086],
+              [77.77415744218291, 12.390603704636632],
+              [77.77438732135664, 12.391302225016886],
+              [77.77376792469431, 12.391501801924363],
+              [77.77399141833513, 12.392187846379386],
+              [77.77333199305133, 12.392392446684909]
+            ]]
+          },
+          properties: {}
+        },
+        createdAt: new Date().toISOString(),
+      };
+      
+      polygons = [defaultPolygon, ...polygons];
+      localStorage.setItem('savedPolygons', JSON.stringify(polygons));
+    }
+
+    setSavedPolygons(polygons);
+    
+    // Set "Jash farm" as default selected farm
+    const jashFarm = polygons.find(p => p.name === 'Jash farm');
+    if (jashFarm) {
+      setSelectedFarmId(jashFarm.id);
+      setCurrentPolygonId(jashFarm.id);
+    } else if (polygons.length > 0) {
+      // If no Jash farm, select the first one
+      setSelectedFarmId(polygons[0].id);
+      setCurrentPolygonId(polygons[0].id);
+    }
+  }, []);
+
+  // Fetch indices for a polygon
+  const fetchIndicesForPolygon = useCallback(async (polygonGeoJSON: any, polygonId: string) => {
+    setLoading(true);
+    try {
+      const apiBase = (import.meta as any).env?.VITE_API_BASE_URL;
+      if (!apiBase) {
+        throw new Error('VITE_API_BASE_URL is not set');
+      }
+
+      // Send polygon to API and fetch indices
+      const response = await fetch(`${apiBase}/api/agricultural-indices?index=${selectedIndex}&polygon=${encodeURIComponent(JSON.stringify(polygonGeoJSON.geometry))}`);
+      
+      if (!response.ok) {
+        throw new Error(`Failed to fetch indices: ${response.statusText}`);
+      }
+
+      const data = await response.json();
+
+      if (!data.urlFormat || !data.geojson || !data.poiPolygon) {
+        throw new Error('Invalid data format received from server');
+      }
+
+      const earthEngineData: EarthEngineData = {
+        ...data,
+        cloudCover: 8.5,
+        date: new Date().getTime()
+      };
+
+      // Update map cache and display
+      setMapCache(prev => ({
+        ...prev,
+        [`${polygonId}-${selectedIndex}`]: earthEngineData
+      }));
+
+      setEarthEngineData(earthEngineData);
+
+      // Update saved polygon with indices and get farm name
+      let farmName = 'polygon';
+      setSavedPolygons(prev => {
+        const updated = prev.map(p => {
+          if (p.id === polygonId) {
+            farmName = p.name; // Capture farm name before updating
+            return {
+              ...p,
+              indices: {
+                ...p.indices,
+                [selectedIndex]: earthEngineData
+              }
+            };
+          }
+          return p;
+        });
+        localStorage.setItem('savedPolygons', JSON.stringify(updated));
+        return updated;
+      });
+
+      toast({
+        title: "Indices Loaded",
+        description: `${selectedIndex.toUpperCase()} data loaded for ${farmName}.`,
+      });
+    } catch (error) {
+      console.error('Error fetching indices for polygon:', error);
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "Failed to load indices for polygon.",
+        variant: "destructive",
+      });
+    } finally {
+      setLoading(false);
+    }
+  }, [selectedIndex, toast]);
+
+  // Handle farm selection - load indices for selected farm
+  const handleFarmSelection = useCallback(async (farmId: string) => {
+    const farm = savedPolygons.find(p => p.id === farmId);
+    if (!farm) return;
+
+    setSelectedFarmId(farmId);
+    setCurrentPolygonId(farmId);
+
+    // Check if we have cached indices for this farm and selected index
+    const cacheKey = `${farmId}-${selectedIndex}`;
+    if (mapCache[cacheKey]) {
+      setEarthEngineData(mapCache[cacheKey]);
+      setLoading(false);
+      return;
+    }
+
+    // Check if farm has indices stored
+    if (farm.indices && farm.indices[selectedIndex]) {
+      setEarthEngineData(farm.indices[selectedIndex]);
+      setMapCache(prev => ({
+        ...prev,
+        [cacheKey]: farm.indices![selectedIndex]
+      }));
+      setLoading(false);
+      return;
+    }
+
+    // Fetch indices for this farm
+    await fetchIndicesForPolygon(farm.geojson, farmId);
+  }, [savedPolygons, selectedIndex, mapCache, fetchIndicesForPolygon]);
+
+  // Initial fetch on mount - wait for savedPolygons to be loaded first
+  useEffect(() => {
+    // Only fetch if we have saved polygons and a selected farm
+    if (savedPolygons.length > 0 && selectedFarmId) {
+      handleFarmSelection(selectedFarmId);
+      return;
+    }
+    // Fallback: fetch default data if no farms are selected
+    if (savedPolygons.length === 0) {
+      fetchEarthEngineData();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [savedPolygons.length, selectedFarmId]);
 
   // Refresh map data when selected index changes
   useEffect(() => {
-    if (map.current) {
-      console.log(`Index changed to: ${selectedIndex}, Cache status:`, mapCache);
-      // Check if data is already cached for this index
-      if (mapCache[selectedIndex]) {
-        console.log(`Using cached data for ${selectedIndex}`);
-        setEarthEngineData(mapCache[selectedIndex]);
-        updateMapLayer(mapCache[selectedIndex]);
-        setLoading(false);
-      } else {
-        console.log(`Fetching new data for ${selectedIndex}`);
-        // Only fetch if not cached
-        fetchEarthEngineData();
+    console.log(`Index changed to: ${selectedIndex}, Cache status:`, mapCache);
+    
+    // If a farm is selected and we have polygons loaded, load its indices
+    if (selectedFarmId && savedPolygons.length > 0) {
+      handleFarmSelection(selectedFarmId);
+    } else if (mapCache[selectedIndex]) {
+      setEarthEngineData(mapCache[selectedIndex]);
+      setLoading(false);
+    } else if (!selectedFarmId) {
+      // Only fetch default data if no farm is selected
+      fetchEarthEngineData();
+    }
+  }, [selectedIndex, mapCache, selectedFarmId, handleFarmSelection, savedPolygons.length]);
+
+  // Helper to compute Leaflet bounds from GeoJSON bbox
+  const computedBounds = useMemo(() => {
+    // Use selected farm's polygon if available, otherwise use earth engine data
+    if (selectedFarmId) {
+      const selectedFarm = savedPolygons.find(p => p.id === selectedFarmId);
+      if (selectedFarm?.geojson?.geometry) {
+        const [minX, minY, maxX, maxY] = bbox(selectedFarm.geojson.geometry) as [number, number, number, number];
+        return [
+          [minY, minX],
+          [maxY, maxX]
+        ] as [[number, number], [number, number]];
       }
     }
-  }, [selectedIndex, mapCache]);
-
-  const updateMapLayer = useCallback((data: EarthEngineData) => {
-    if (!map.current) return;
-
-    console.log('Updating map layer with data:', data);
-    console.log('Tile URL:', data.urlFormat);
-
-    // Remove existing Earth Engine layer if it exists
-    if (map.current.getLayer(eeLayerId)) {
-      map.current.removeLayer(eeLayerId);
+    
+    if (earthEngineData?.geojson) {
+      const [minX, minY, maxX, maxY] = bbox(earthEngineData.geojson) as [number, number, number, number];
+      return [
+        [minY, minX],
+        [maxY, maxX]
+      ] as [[number, number], [number, number]];
     }
-    if (map.current.getSource(eeLayerId)) {
-      map.current.removeSource(eeLayerId);
-    }
+    
+    return null;
+  }, [earthEngineData, selectedFarmId, savedPolygons]);
 
-    try {
-      // Add Earth Engine source
-      map.current.addSource(eeLayerId, {
-        type: "raster",
-        tiles: [data.urlFormat],
-        tileSize: 256,
+  // Inner component to manage map effects with React-Leaflet context
+  const MapEffects: React.FC = () => {
+    const map = useMap();
+
+    useEffect(() => {
+      if (computedBounds && !isDrawing) {
+        map.fitBounds(computedBounds, { padding: [50, 50] });
+      }
+    }, [map, computedBounds, isDrawing]);
+
+    return null;
+  };
+
+  // Toggle drawing mode
+  const toggleDrawing = useCallback(() => {
+    setIsDrawing(prev => {
+      if (prev) {
+        // If stopping drawing, cancel any active drawing
+        const map = document.querySelector('.leaflet-container') as any;
+        if (map && map._leaflet) {
+          // Cancel any active drawing
+          const drawControl = document.querySelector('.leaflet-draw-toolbar');
+          if (drawControl) {
+            const cancelButton = drawControl.querySelector('.leaflet-draw-actions a') as HTMLElement;
+            if (cancelButton) {
+              cancelButton.click();
+            }
+          }
+        }
+      }
+      return !prev;
+    });
+  }, []);
+
+  // Convert Leaflet layer to GeoJSON
+  const layerToGeoJSON = useCallback((layer: L.Layer): any => {
+    if (layer instanceof L.Polygon) {
+      const latlngs = layer.getLatLngs()[0] as L.LatLng[];
+      const coordinates = latlngs.map(ll => [ll.lng, ll.lat]);
+      // Close the polygon
+      coordinates.push(coordinates[0]);
+      return {
+        type: 'Feature',
+        geometry: {
+          type: 'Polygon',
+          coordinates: [coordinates]
+        },
+        properties: {}
+      };
+    }
+    return null;
+  }, []);
+
+  // Save polygon to localStorage and download
+  const savePolygon = useCallback(async (layer: L.Polygon, name: string) => {
+    const geojson = layerToGeoJSON(layer);
+    if (!geojson) return;
+
+    const polygonData: SavedPolygon = {
+      id: `polygon-${Date.now()}`,
+      name,
+      geojson,
+      createdAt: new Date().toISOString(),
+    };
+
+    // Update saved polygons
+    const updated = [...savedPolygons, polygonData];
+    setSavedPolygons(updated);
+    localStorage.setItem('savedPolygons', JSON.stringify(updated));
+    
+    // Set the newly created polygon as selected
+    setSelectedFarmId(polygonData.id);
+    setCurrentPolygonId(polygonData.id);
+
+    // Download as GeoJSON file
+    const blob = new Blob([JSON.stringify(geojson, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${name.replace(/[^a-z0-9]/gi, '_')}-${Date.now()}.geojson`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    toast({
+      title: "Polygon Saved",
+      description: `"${name}" has been saved and downloaded.`,
+    });
+
+    // Fetch indices for this polygon
+    await fetchIndicesForPolygon(geojson, polygonData.id);
+  }, [savedPolygons, layerToGeoJSON, toast, fetchIndicesForPolygon]);
+
+  // Handle polygon creation
+  const handleCreated = useCallback((e: L.DrawEvents.Created) => {
+    const { layer } = e;
+    setIsDrawing(false);
+    setPendingPolygon(layer as L.Polygon);
+    setShowNameDialog(true);
+  }, []);
+
+  // Handle polygon deletion
+  const handleDeleted = useCallback(() => {
+    toast({
+      title: "Polygon Deleted",
+      description: "Polygon has been removed from the map.",
+    });
+  }, [toast]);
+
+  // DrawControl component to manage Leaflet Draw
+  const DrawControl: React.FC<{ 
+    isDrawing: boolean; 
+    onCreated: (e: L.DrawEvents.Created) => void; 
+    onDeleted: () => void;
+  }> = ({ isDrawing, onCreated, onDeleted }) => {
+    const map = useMap();
+    const drawControlRef = useRef<L.Control.Draw | null>(null);
+    const featureGroupRef = useRef<L.FeatureGroup | null>(null);
+    const drawHandlerRef = useRef<L.Draw.Polygon | null>(null);
+
+    useEffect(() => {
+      // Create FeatureGroup for drawn polygons
+      if (!featureGroupRef.current) {
+        featureGroupRef.current = new L.FeatureGroup();
+        map.addLayer(featureGroupRef.current);
+      }
+
+      const drawControl = new L.Control.Draw({
+        position: 'topright',
+        draw: {
+          polygon: {
+            allowIntersection: false,
+            showArea: true,
+          },
+          rectangle: false,
+          circle: false,
+          circlemarker: false,
+          marker: false,
+          polyline: false,
+        },
+        edit: {
+          featureGroup: featureGroupRef.current,
+          remove: true,
+        },
       });
 
-      console.log('Source added successfully');
+      map.addControl(drawControl);
+      drawControlRef.current = drawControl;
 
-      // After the source is added then add it as map layer
-      map.current.addLayer({
-        type: "raster",
-        source: eeLayerId,
-        id: eeLayerId,
-        minzoom: 0,
-        maxzoom: 20,
-      });
+      const handleDrawCreated = (e: L.DrawEvents.Created) => {
+        const { layer } = e;
+        if (featureGroupRef.current) {
+          featureGroupRef.current.addLayer(layer);
+        }
+        onCreated(e);
+      };
 
-      console.log('Layer added successfully');
+      const handleDrawDeleted = () => {
+        onDeleted();
+      };
 
-      // Log tile loading status
-      console.log('Earth Engine tiles added successfully');
+      map.on(L.Draw.Event.CREATED, handleDrawCreated);
+      map.on(L.Draw.Event.DELETED, handleDrawDeleted);
 
-      // Create bounding box around the polygon
-      if (data.geojson) {
-        const bounds = bbox(data.geojson);
+      return () => {
+        if (drawControlRef.current) {
+          map.removeControl(drawControlRef.current);
+        }
+        map.off(L.Draw.Event.CREATED, handleDrawCreated);
+        map.off(L.Draw.Event.DELETED, handleDrawDeleted);
+        if (featureGroupRef.current) {
+          map.removeLayer(featureGroupRef.current);
+          featureGroupRef.current = null;
+        }
+      };
+    }, [map, onCreated, onDeleted]);
 
-        // Add POI polygon if available
-        if (data.poiPolygon) {
-          // Remove existing POI polygon layers if they exist
-          if (map.current.getLayer("poi-polygon-fill")) {
-            map.current.removeLayer("poi-polygon-fill");
-          }
-          if (map.current.getLayer("poi-polygon-outline")) {
-            map.current.removeLayer("poi-polygon-outline");
-          }
-          if (map.current.getSource("poi-polygon")) {
-            map.current.removeSource("poi-polygon");
-          }
-
-          // Add POI polygon source
-          map.current.addSource("poi-polygon", {
-            type: "geojson",
-            data: data.poiPolygon
-          });
-
-          // Add POI polygon fill layer
-          map.current.addLayer({
-            id: "poi-polygon-fill",
-            type: "fill",
-            source: "poi-polygon",
-            paint: {
-              "fill-color": "transparent",
-              "fill-opacity": 0.1
-            }
-          });
-
-          // Add POI polygon outline layer
-          map.current.addLayer({
-            id: "poi-polygon-outline",
-            type: "line",
-            source: "poi-polygon",
-            paint: {
-              "line-color": "#3b82f6",
-              "line-width": 2,
-              "line-dasharray": [2, 2]
-            }
-          });
+    // Enable polygon drawing when button is clicked
+    useEffect(() => {
+      if (isDrawing && drawControlRef.current) {
+        // Remove any existing handler
+        if (drawHandlerRef.current) {
+          map.removeLayer(drawHandlerRef.current);
+          drawHandlerRef.current = null;
         }
 
-        // Fit map to bounds
-        map.current.fitBounds(bounds as [number, number, number, number], {
-          padding: 50,
-          duration: 1000
-        });
+        // Start drawing after a short delay to ensure control is ready
+        setTimeout(() => {
+          const polygonButton = document.querySelector('.leaflet-draw-draw-polygon') as HTMLElement;
+          if (polygonButton) {
+            polygonButton.click();
+          } else {
+            // Fallback: manually start drawing
+            const drawControl = drawControlRef.current;
+            if (drawControl && featureGroupRef.current) {
+              const polygonDrawer = new L.Draw.Polygon(map, {
+                allowIntersection: false,
+                showArea: true,
+              });
+              drawHandlerRef.current = polygonDrawer;
+              polygonDrawer.enable();
+            }
+          }
+        }, 200);
+      } else {
+        // Stop drawing if active
+        if (drawHandlerRef.current) {
+          drawHandlerRef.current.disable();
+          drawHandlerRef.current = null;
+        }
       }
-    } catch (error) {
-      console.error('Error updating map layer:', error);
-      toast({
-        title: "Map Error",
-        description: "Failed to load map tiles. Please try again.",
-        variant: "destructive",
-      });
-    }
-  }, [eeLayerId, toast]);
+    }, [isDrawing, map]);
 
-  // Cleanup effect
-  useEffect(() => {
-    return () => {
-      map.current?.remove();
-    };
-  }, []);
+    return null;
+  };
 
   const getIndexUnit = (index: string) => {
     switch (index) {
@@ -374,6 +711,17 @@ export const FieldMap: React.FC<FieldMapProps> = ({
     }
   };
 
+  // Handle saving polygon with name
+  const handleSavePolygon = useCallback(async () => {
+    if (!pendingPolygon || !polygonName.trim()) return;
+
+    await savePolygon(pendingPolygon, polygonName.trim());
+    
+    setShowNameDialog(false);
+    setPolygonName('');
+    setPendingPolygon(null);
+  }, [pendingPolygon, polygonName, savePolygon]);
+
   return (
     <Card className={cn("overflow-hidden", className)}>
       <CardHeader className="pb-3">
@@ -384,7 +732,7 @@ export const FieldMap: React.FC<FieldMapProps> = ({
           </CardTitle>
           <div className="flex items-center space-x-2">
             <Badge variant="outline" className="text-xs">
-              Google Project: avid-infinity-456706-d6
+              Google Project: wrkfarm-415118
             </Badge>
             {earthEngineData && (
               <Badge variant="outline" className="text-xs bg-success/10 text-success">
@@ -399,6 +747,47 @@ export const FieldMap: React.FC<FieldMapProps> = ({
       </CardHeader>
 
       <CardContent className="p-0">
+        {/* Name Dialog */}
+        <Dialog open={showNameDialog} onOpenChange={setShowNameDialog}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Name Your Polygon</DialogTitle>
+              <DialogDescription>
+                Enter a name for this polygon. It will be saved and you can fetch agricultural indices for it.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="py-4">
+              <Input
+                placeholder="e.g., Field A, North Section, etc."
+                value={polygonName}
+                onChange={(e) => setPolygonName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && polygonName.trim()) {
+                    handleSavePolygon();
+                  }
+                }}
+                autoFocus
+              />
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => {
+                setShowNameDialog(false);
+                setPolygonName('');
+                setPendingPolygon(null);
+              }}>
+                Cancel
+              </Button>
+              <Button 
+                onClick={handleSavePolygon}
+                disabled={!polygonName.trim()}
+              >
+                <Save className="w-4 h-4 mr-2" />
+                Save & Get Indices
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
         {/* Map Controls */}
         <div className="flex items-center justify-between p-4 border-b border-border/50 bg-muted/30">
           {/* Index Selection Buttons - Horizontally Scrollable */}
@@ -603,15 +992,76 @@ export const FieldMap: React.FC<FieldMapProps> = ({
             <div className="absolute right-0 top-0 bottom-0 w-4 bg-gradient-to-l from-muted/30 to-transparent pointer-events-none z-10"></div>
           </div>
 
-          {/* Refresh Button */}
-          <Button variant="outline" size="sm" disabled={loading} onClick={fetchEarthEngineData} className="ml-4 flex-shrink-0">
-            {loading ? (
-              <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
-            ) : (
-              <RefreshCw className="w-4 h-4 mr-2" />
+          {/* Farm Selector */}
+          {savedPolygons.length > 0 && (
+            <div className="flex items-center space-x-2 ml-4 flex-shrink-0">
+              <div className="relative">
+                <select
+                  value={selectedFarmId || ''}
+                  onChange={(e) => {
+                    if (e.target.value) {
+                      handleFarmSelection(e.target.value);
+                    }
+                  }}
+                  className="appearance-none bg-background border border-input rounded-md px-3 py-1.5 pr-8 text-sm focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 flex-shrink-0 min-w-[150px]"
+                >
+                  {savedPolygons.map((polygon) => (
+                    <option key={polygon.id} value={polygon.id}>
+                      {polygon.name}
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 pointer-events-none text-muted-foreground" />
+              </div>
+            </div>
+          )}
+
+          {/* Map Controls */}
+          <div className="flex items-center space-x-2 ml-4 flex-shrink-0">
+            <Button 
+              variant={isDrawing ? "default" : "outline"} 
+              size="sm" 
+              onClick={toggleDrawing}
+              disabled={loading}
+              className="flex-shrink-0"
+            >
+              <MapPinned className="w-4 h-4 mr-2" />
+              {isDrawing ? 'Stop Drawing' : 'Draw Polygon'}
+            </Button>
+            {savedPolygons.length > 0 && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  const blob = new Blob([JSON.stringify(savedPolygons, null, 2)], { type: 'application/json' });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement('a');
+                  a.href = url;
+                  a.download = `all-polygons-${Date.now()}.json`;
+                  document.body.appendChild(a);
+                  a.click();
+                  document.body.removeChild(a);
+                  URL.revokeObjectURL(url);
+                  toast({
+                    title: "Polygons Exported",
+                    description: `All ${savedPolygons.length} polygons have been exported.`,
+                  });
+                }}
+                className="flex-shrink-0"
+              >
+                <Download className="w-4 h-4 mr-2" />
+                Export All ({savedPolygons.length})
+              </Button>
             )}
-            Refresh Data
-          </Button>
+            <Button variant="outline" size="sm" disabled={loading} onClick={fetchEarthEngineData} className="flex-shrink-0">
+              {loading ? (
+                <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
+              ) : (
+                <RefreshCw className="w-4 h-4 mr-2" />
+              )}
+              Refresh Data
+            </Button>
+          </div>
         </div>
 
         {/* Scroll hint */}
@@ -662,10 +1112,55 @@ export const FieldMap: React.FC<FieldMapProps> = ({
 
         {/* Map Container */}
         <div
-          ref={setMapContainer}
           className={cn("w-full relative", height)}
           style={{ minHeight: '400px' }}
         >
+          <MapContainer
+            center={[0, 0]}
+            zoom={2}
+            minZoom={2}
+            maxZoom={20}
+            style={{ height: '100%', width: '100%' }}
+            preferCanvas
+          >
+            <TileLayer url={baseTileUrl} attribution="&copy; OpenStreetMap contributors" />
+            {earthEngineData?.urlFormat && (
+              <TileLayer url={earthEngineData.urlFormat} opacity={1} zIndex={500} />
+            )}
+            {/* Display selected farm polygon */}
+            {selectedFarmId && (() => {
+              const selectedFarm = savedPolygons.find(p => p.id === selectedFarmId);
+              if (selectedFarm) {
+                return (
+                  <GeoJSON
+                    key={selectedFarmId}
+                    data={selectedFarm.geojson}
+                    style={{ 
+                      color: selectedFarmId === 'jash-farm-default' ? '#3b82f6' : '#10b981', 
+                      weight: 3, 
+                      fillOpacity: 0.15,
+                      fillColor: selectedFarmId === 'jash-farm-default' ? '#3b82f6' : '#10b981'
+                    }}
+                  />
+                );
+              }
+              return null;
+            })()}
+            {/* Default polygon from Earth Engine data (fallback) */}
+            {!selectedFarmId && earthEngineData?.poiPolygon && (
+              <GeoJSON
+                data={earthEngineData.poiPolygon}
+                style={{ color: '#3b82f6', weight: 2, dashArray: '2,2', fillOpacity: 0.1 }}
+              />
+            )}
+            {/* Draw Control - manages FeatureGroup internally */}
+            <DrawControl 
+              isDrawing={isDrawing} 
+              onCreated={handleCreated} 
+              onDeleted={handleDeleted}
+            />
+            <MapEffects />
+          </MapContainer>
           {/* Loading Overlay */}
           {loading && (
             <div className="absolute inset-0 bg-black/20 backdrop-blur-sm z-20 flex items-center justify-center">

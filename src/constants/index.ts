@@ -9,7 +9,8 @@ export const APP_CONFIG = {
 
 // API Endpoints
 export const API_ENDPOINTS = {
-    earthEngine: '/api/ee',
+    earthEngine: '/api/agricultural-indices',
+    agriculturalIndices: '/api/agricultural-indices',
     weather: '/api/weather',
     health: '/api/health',
     alerts: '/api/alerts',

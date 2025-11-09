@@ -3,7 +3,7 @@ import { ApiResponse, ApiError, EarthEngineResponse } from '@/types';
 import { retry } from '@/utils';
 
 // Base API configuration
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://sentinel-agro-insight.vercel.app';
 
 // Custom error class for API errors
 export class ApiException extends Error {
@@ -96,6 +96,25 @@ export class ApiService {
     static async getEarthEngineData(): Promise<EarthEngineResponse> {
         return retry(
             () => httpClient.get<EarthEngineResponse>(API_ENDPOINTS.earthEngine),
+            3,
+            1000
+        );
+    }
+
+    // Agricultural Indices API
+    static async getAgriculturalIndices(
+        index: string = 'msavi',
+        start: string = '2024-01-01',
+        end: string = '2024-12-31'
+    ): Promise<EarthEngineResponse> {
+        const params = new URLSearchParams({
+            index,
+            start,
+            end,
+        });
+
+        return retry(
+            () => httpClient.get<EarthEngineResponse>(`${API_ENDPOINTS.agriculturalIndices}?${params}`),
             3,
             1000
         );
