@@ -7,13 +7,14 @@ export const APP_CONFIG = {
     repository: 'https://github.com/wrkfarm',
 } as const;
 
-// API Endpoints
+// API Endpoints (Supabase Edge Functions - no /api prefix)
 export const API_ENDPOINTS = {
-    earthEngine: '/api/ee',
-    weather: '/api/weather',
-    health: '/api/health',
-    alerts: '/api/alerts',
-    analytics: '/api/analytics',
+    earthEngine: '/agricultural-indices',
+    agriculturalIndices: '/agricultural-indices',
+    weather: '/weather',
+    health: '/health',
+    alerts: '/alerts',
+    analytics: '/analytics',
 } as const;
 
 // Map Configuration

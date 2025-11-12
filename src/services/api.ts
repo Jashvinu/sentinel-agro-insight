@@ -2,8 +2,75 @@ import { API_ENDPOINTS, ERROR_MESSAGES } from '@/constants';
 import { ApiResponse, ApiError, EarthEngineResponse } from '@/types';
 import { retry } from '@/utils';
 
-// Base API configuration
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
+const DEFAULT_LOCAL_API_BASE_URL = 'http://127.0.0.1:3000';
+const VALID_PROTOCOLS = new Set(['http:', 'https:']);
+const URL_MATCHER = /^https?:\/\//i;
+
+const stripTrailingSlash = (value: string): string => value.replace(/\/+$/, '');
+
+const resolveApiBaseUrl = (): string => {
+    const envValue = import.meta.env.VITE_API_BASE_URL?.trim();
+
+    if (envValue) {
+        try {
+            const parsed = new URL(envValue);
+            if (!VALID_PROTOCOLS.has(parsed.protocol)) {
+                throw new Error(`Unsupported protocol "${parsed.protocol}"`);
+            }
+            return stripTrailingSlash(parsed.toString());
+        } catch (error) {
+            console.warn(
+                '[ApiService] Invalid VITE_API_BASE_URL provided. Falling back to defaults.',
+                error
+            );
+        }
+    }
+
+    if (typeof window !== 'undefined') {
+        const { hostname } = window.location;
+        if (hostname === 'localhost' || hostname === '127.0.0.1') {
+            return DEFAULT_LOCAL_API_BASE_URL;
+        }
+
+        const fallback = stripTrailingSlash(`${window.location.protocol}//${window.location.host}`);
+        console.warn(
+            `[ApiService] VITE_API_BASE_URL not set. Using window origin "${fallback}". ` +
+            'Configure VITE_API_BASE_URL for production deploys.'
+        );
+        return fallback;
+    }
+
+    return DEFAULT_LOCAL_API_BASE_URL;
+};
+
+export const API_BASE_URL = resolveApiBaseUrl();
+
+export const getSupabaseFunctionHeaders = (): Record<string, string> => {
+    const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY?.trim();
+    const headers: Record<string, string> = {};
+
+    if (anonKey) {
+        headers['apikey'] = anonKey;
+        headers['Authorization'] = `Bearer ${anonKey}`;
+    } else {
+        console.warn('[ApiService] VITE_SUPABASE_ANON_KEY not set. Requests may fail with 401 Unauthorized.');
+    }
+
+    return headers;
+};
+
+export const buildApiUrl = (path = ''): string => {
+    if (!path) {
+        return API_BASE_URL;
+    }
+
+    if (URL_MATCHER.test(path)) {
+        return stripTrailingSlash(path);
+    }
+
+    const normalisedPath = path.startsWith('/') ? path : `/${path}`;
+    return `${stripTrailingSlash(API_BASE_URL)}${normalisedPath}`;
+};
 
 // Custom error class for API errors
 export class ApiException extends Error {
@@ -24,7 +91,7 @@ class HttpClient {
         endpoint: string,
         options: RequestInit = {}
     ): Promise<T> {
-        const url = `${API_BASE_URL}${endpoint}`;
+        const url = buildApiUrl(endpoint);
 
         const config: RequestInit = {
             headers: {
@@ -96,6 +163,25 @@ export class ApiService {
     static async getEarthEngineData(): Promise<EarthEngineResponse> {
         return retry(
             () => httpClient.get<EarthEngineResponse>(API_ENDPOINTS.earthEngine),
+            3,
+            1000
+        );
+    }
+
+    // Agricultural Indices API
+    static async getAgriculturalIndices(
+        index: string = 'msavi',
+        start: string = '2024-01-01',
+        end: string = '2024-12-31'
+    ): Promise<EarthEngineResponse> {
+        const params = new URLSearchParams({
+            index,
+            start,
+            end,
+        });
+
+        return retry(
+            () => httpClient.get<EarthEngineResponse>(`${API_ENDPOINTS.agriculturalIndices}?${params}`),
             3,
             1000
         );
@@ -186,10 +272,10 @@ export class ApiService {
             xhr.addEventListener('load', () => {
                 if (xhr.status >= 200 && xhr.status < 300) {
                     try {
-                        const response = JSON.parse(xhr.responseText);
+                        const response = JSON.parse(xhr.responseText) as Record<string, unknown>;
                         resolve(response);
                     } catch {
-                        resolve(xhr.responseText as Record<string, unknown>);
+                        resolve({ raw: xhr.responseText });
                     }
                 } else {
                     reject(new ApiException(
@@ -207,7 +293,7 @@ export class ApiService {
                 ));
             });
 
-            xhr.open('POST', `${API_BASE_URL}${endpoint}`);
+            xhr.open('POST', buildApiUrl(endpoint));
             xhr.send(formData);
         });
     }

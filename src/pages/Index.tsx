@@ -1,25 +1,18 @@
 import React, { useState } from 'react';
 import { Navigation } from '@/components/layout/navigation/navigation';
 import { DashboardKPIs } from '@/components/features/dashboard/DashboardKPIs';
+import { AIFieldReport } from '@/components/features/dashboard/AIFieldReport';
 import { WeatherSummary } from '@/components/features/dashboard/WeatherSummary';
 import { AlertsOverview } from '@/components/features/dashboard/AlertsOverview';
 import { FieldMap } from '@/components/features/map/field-map';
 import { AgriculturalIndices } from '@/components/features/dashboard/AgriculturalIndices';
+import { FarmTimeline } from '@/components/features/dashboard/FarmTimeline';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import {
-  Satellite,
-  Calendar,
-  Download,
-  Filter,
-  RefreshCw,
-  TrendingUp,
-  BarChart3
-} from 'lucide-react';
+import { TrendingUp, BarChart3 } from 'lucide-react';
 import { APP_CONFIG, DATA_SOURCES, FIELD_BOUNDARIES } from '@/constants';
 import { formatDateTime } from '@/utils';
-import satelliteHero from '@/assets/satellite-hero.jpg';
 
 const Index = () => {
   const [currentPage, setCurrentPage] = useState('dashboard');
@@ -31,47 +24,22 @@ const Index = () => {
 
       {/* Main Content */}
       <main className="px-4 lg:px-6 py-6 space-y-6">
-        {/* Hero Section */}
-        <div className="relative overflow-hidden rounded-xl bg-gradient-satellite p-8 text-white">
-          <div
-            className="absolute inset-0 bg-cover bg-center opacity-30"
-            style={{ backgroundImage: `url(${satelliteHero})` }}
-          />
-          <div className="relative z-10">
-            <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between space-y-4 lg:space-y-0">
-              <div className="space-y-3">
-                <div className="flex items-center space-x-2">
-                  <Satellite className="w-6 h-6" />
-                  <h1 className="text-2xl lg:text-3xl font-bold">{APP_CONFIG.name}</h1>
-                </div>
-                <p className="text-white/90 text-lg">
-                  {APP_CONFIG.description}
-                </p>
-                <div className="flex items-center space-x-4 text-sm">
-                  <div className="flex items-center space-x-1">
-                    <div className="w-2 h-2 bg-success rounded-full animate-pulse" />
-                    <span>Real-time data</span>
-                  </div>
-                  <span>Field: {FIELD_BOUNDARIES.coordinates[0][1]}°E, {FIELD_BOUNDARIES.coordinates[0][0]}°N</span>
-                  <span>Resolution: 10m/pixel</span>
-                </div>
-              </div>
-              <div className="flex items-center space-x-3">
-                <Button variant="outline" className="bg-white/10 border-white/30 text-white hover:bg-white/20">
-                  <RefreshCw className="w-4 h-4 mr-2" />
-                  Sync Data
-                </Button>
-                <Button className="bg-white text-primary hover:bg-white/90">
-                  <Download className="w-4 h-4 mr-2" />
-                  Export Report
-                </Button>
-              </div>
-            </div>
-          </div>
+        {/* Header */}
+        <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3">
+          <h1 className="text-3xl font-bold tracking-tight text-foreground">
+            {APP_CONFIG.name}
+          </h1>
+          <p className="text-sm text-muted-foreground">
+            {FIELD_BOUNDARIES.coordinates[0][1].toFixed(6)}°N,{' '}
+            {FIELD_BOUNDARIES.coordinates[0][0].toFixed(6)}°E
+          </p>
         </div>
 
         {/* KPI Dashboard */}
         <DashboardKPIs />
+
+        {/* AI Report */}
+        <AIFieldReport />
 
         {/* Main Dashboard Grid */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -124,8 +92,15 @@ const Index = () => {
         {/* Agricultural Indices Dashboard */}
         <AgriculturalIndices />
 
-        {/* Recent Alerts */}
-        <AlertsOverview />
+        {/* Farm Timeline - Historical Data */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <div className="lg:col-span-2">
+            <AlertsOverview />
+          </div>
+          <div>
+            <FarmTimeline />
+          </div>
+        </div>
 
         {/* Data Sources Footer */}
         <Card className="bg-muted/30">
