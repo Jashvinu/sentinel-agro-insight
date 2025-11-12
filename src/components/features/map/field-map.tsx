@@ -229,7 +229,7 @@ export const FieldMap: React.FC<FieldMapProps> = ({
 
     setLoading(true);
     try {
-      // Require API base URL via env to avoid mismatched origins (Firebase vs Vercel)
+      // Require API base URL via env to avoid mismatched origins (Firebase vs Supabase Edge Functions)
       const apiBase = API_BASE_URL;
       console.log('[FieldMap] API base:', apiBase);
       // Quick health check to provide clearer errors

@@ -69,22 +69,32 @@ echo ""
 echo "📤 Deploying functions..."
 echo ""
 
-# Deploy all functions
-supabase functions deploy health --project-ref "$SUPABASE_PROJECT_REF" --no-verify-jwt
-echo -e "${GREEN}✓ Deployed health function${NC}"
+FUNCTIONS=(
+    "health"
+    "agricultural-indices"
+    "farm-timeline"
+    "get-available-dates"
+    "get-observation-dates"
+    "sync-satellite-dates"
+)
 
-supabase functions deploy agricultural-indices --project-ref "$SUPABASE_PROJECT_REF" --no-verify-jwt
-echo -e "${GREEN}✓ Deployed agricultural-indices function${NC}"
+for fn in "${FUNCTIONS[@]}"; do
+    if [ -d "supabase/functions/$fn" ]; then
+        echo "→ deploying $fn"
+        supabase functions deploy "$fn" --project-ref "$SUPABASE_PROJECT_REF" --no-verify-jwt
+        echo -e "${GREEN}✓ $fn deployed${NC}"
+        echo ""
+    else
+        echo -e "${YELLOW}⚠️  Skipping $fn (directory not found)${NC}"
+        echo ""
+    fi
+done
 
-echo ""
 echo -e "${GREEN}✅ Deployment complete!${NC}"
 echo ""
 echo "Your Edge Functions are now live at:"
-echo "  Health Check: https://$SUPABASE_PROJECT_REF.supabase.co/functions/v1/health"
-echo "  Agricultural Indices: https://$SUPABASE_PROJECT_REF.supabase.co/functions/v1/agricultural-indices"
+echo "  Base URL: https://$SUPABASE_PROJECT_REF.supabase.co/functions/v1"
 echo ""
-echo "Update your frontend .env file:"
+echo "Update your frontend .env file if needed:"
 echo "  VITE_API_BASE_URL=https://$SUPABASE_PROJECT_REF.supabase.co/functions/v1"
 echo ""
-
-

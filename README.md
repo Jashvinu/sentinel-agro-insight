@@ -32,8 +32,7 @@ This project uses a **separated deployment architecture**:
 ### Backend
 - Supabase Edge Functions (Deno runtime)
 - Google Earth Engine API
-- CORS enabled for cross-origin requests
-- Express adapter for local development (optional)
+- CORS-enabled responses for safe cross-origin requests
 
 ## Getting Started
 
@@ -105,9 +104,9 @@ npm run build
 # Then deploy to Firebase, Netlify, Cloudflare Pages, etc.
 ```
 
-📖 **Quick Start**: See [SUPABASE_QUICKSTART.md](./SUPABASE_QUICKSTART.md) for step-by-step instructions.
+📖 **Quick Start**: See [`docs/guides/quickstart.md`](docs/guides/quickstart.md) for step-by-step instructions.
 
-📚 **Full Documentation**: See [docs/SUPABASE_DEPLOYMENT.md](./docs/SUPABASE_DEPLOYMENT.md) for advanced configuration.
+📚 **Full Documentation**: See [`docs/guides/supabase-edge-functions.md`](docs/guides/supabase-edge-functions.md) for advanced configuration.
 
 ### Local Development with Supabase
 
@@ -150,28 +149,35 @@ Base URL: `https://your-project-ref.supabase.co/functions/v1`
 ## Project Structure
 
 ```
-├── supabase/                  # Supabase Edge Functions
-│   ├── functions/            
-│   │   ├── _shared/          # Shared utilities (CORS, response helpers)
-│   │   ├── health/           # Health check endpoint
-│   │   └── agricultural-indices/  # Main agricultural API
-│   └── config.toml           # Supabase configuration
-├── api/                      # Legacy Express server for local dev (optional)
+├── docs/
+│   ├── guides/               # Deployment & quick start guides
+│   ├── reference/            # Checklists and reference material
+│   └── archive/              # Legacy notes and migration logs
+├── supabase/                 # Supabase Edge Functions
+│   ├── config.toml
+│   └── functions/
+│       ├── _shared/          # Shared utilities (CORS, response helpers)
+│       ├── agricultural-indices/
+│       ├── farm-timeline/
+│       ├── get-available-dates/
+│       ├── get-observation-dates/
+│       ├── health/
+│       └── sync-satellite-dates/
 ├── scripts/                  # Deployment helpers
-│   ├── deploy-supabase.sh    # Edge Functions deployment
-│   ├── setup-supabase-env.sh # Environment setup
-│   ├── supabase-local.sh     # Local development
-│   └── deploy-firebase.sh    # Frontend deployment
+│   ├── deploy-firebase.sh
+│   ├── deploy-supabase.sh
+│   ├── setup-supabase-env.sh
+│   └── supabase-local.sh
 ├── src/                      # Frontend source code
-│   ├── components/           # React components
-│   ├── hooks/               # Custom React hooks
-│   ├── services/            # API services
-│   ├── types/               # TypeScript types
-│   └── utils/               # Utility functions
-├── public/                  # Static assets
-├── dist/                   # Built frontend
-├── firebase.json           # Firebase configuration
-└── package.json            # Dependencies and scripts
+│   ├── components/
+│   ├── hooks/
+│   ├── services/
+│   ├── types/
+│   └── utils/
+├── public/                   # Static assets
+├── dist/                     # Built frontend (after `npm run build`)
+├── firebase.json             # Firebase configuration
+└── package.json              # Dependencies and scripts
 ```
 
 ## Contributing

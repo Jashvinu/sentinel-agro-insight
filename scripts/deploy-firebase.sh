@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Firebase Deployment Script for Frontend Only
-# This script deploys only the frontend to Firebase (server is on Vercel)
+# This script deploys only the frontend to Firebase (API is served by Supabase Edge Functions)
 
 set -e
 
@@ -48,10 +48,10 @@ firebase deploy --only hosting
 echo "🎉 Frontend deployment completed!"
 echo ""
 echo "📋 Next steps:"
-echo "1. Make sure your Vercel server is deployed and running"
-echo "2. Update VITE_API_BASE_URL in your frontend to point to Vercel"
+echo "1. Make sure your Supabase Edge Functions are deployed and running"
+echo "2. Update VITE_API_BASE_URL in your frontend to point to Supabase"
 echo "3. Your frontend is now hosted on Firebase"
-echo "4. API calls will be made to your Vercel server"
+echo "4. API calls will be made to your Supabase Edge Functions"
 echo ""
 echo "🔗 Useful commands:"
 echo "   firebase serve         # Serve locally with Firebase"
