@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Navigation } from '@/components/layout/navigation/navigation';
 import { DashboardKPIs } from '@/components/features/dashboard/DashboardKPIs';
+import { AIFieldReport } from '@/components/features/dashboard/AIFieldReport';
 import { WeatherSummary } from '@/components/features/dashboard/WeatherSummary';
 import { AlertsOverview } from '@/components/features/dashboard/AlertsOverview';
 import { FieldMap } from '@/components/features/map/field-map';
@@ -24,6 +25,9 @@ const Index = () => {
         {/* KPI Dashboard - Minimalistic */}
         <DashboardKPIs />
 
+        {/* AI Field Report */}
+        <AIFieldReport />
+
         {/* Main Map Section - Full Width & Prominent */}
         <FieldMap height="h-[500px]" />
 
@@ -34,8 +38,27 @@ const Index = () => {
           <FarmTimeline />
         </div>
 
-        {/* Agricultural Indices - Below Everything */}
-        <AgriculturalIndices />
+        {/* Agricultural Indices - Collapsible Section */}
+        <details className="group">
+          <summary className="cursor-pointer list-none">
+            <Card className="hover:border-primary/50 transition-colors">
+              <CardContent className="p-4 flex items-center justify-between">
+                <span className="font-semibold text-foreground">Agricultural Indices</span>
+                <svg 
+                  className="w-5 h-5 text-muted-foreground transition-transform group-open:rotate-180" 
+                  fill="none" 
+                  stroke="currentColor" 
+                  viewBox="0 0 24 24"
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                </svg>
+              </CardContent>
+            </Card>
+          </summary>
+          <div className="mt-4 animate-accordion-down">
+            <AgriculturalIndices />
+          </div>
+        </details>
 
         {/* Data Sources Footer */}
         <Card className="bg-muted/30">
