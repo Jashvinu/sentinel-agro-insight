@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
+import { getIndexDisplayName } from '@/utils';
 
 interface TimelineData {
   farm: {
@@ -24,17 +25,23 @@ interface TimelineData {
 }
 
 interface FarmTimelineProps {
-  farmId?: string;
+  farmId?: string | null;
   onDateSelect?: (date: string, indices: any[]) => void;
 }
 
-export function FarmTimeline({ farmId = 'df43eedf-850d-454c-9fbf-36a052be10c0', onDateSelect }: FarmTimelineProps) {
+export function FarmTimeline({ farmId, onDateSelect }: FarmTimelineProps) {
   const [timeline, setTimeline] = useState<TimelineData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
 
   useEffect(() => {
+    if (!farmId) {
+      setLoading(false);
+      setError('No farm ID provided');
+      return;
+    }
+
     async function fetchTimeline() {
       try {
         setLoading(true);
@@ -173,7 +180,7 @@ export function FarmTimeline({ farmId = 'df43eedf-850d-454c-9fbf-36a052be10c0', 
               key={indexType}
               className={`${getIndexBadgeColor(indexType)} text-white`}
             >
-              {indexType.toUpperCase()}
+              {getIndexDisplayName(indexType)}
             </Badge>
           ))}
         </div>
@@ -206,7 +213,7 @@ export function FarmTimeline({ farmId = 'df43eedf-850d-454c-9fbf-36a052be10c0', 
                           variant="outline"
                           className="text-xs"
                         >
-                          {index.index_type}
+                          {getIndexDisplayName(index.index_type)}
                         </Badge>
                       ))}
                     </div>
@@ -221,7 +228,7 @@ export function FarmTimeline({ farmId = 'df43eedf-850d-454c-9fbf-36a052be10c0', 
                   <div className="mt-2 pt-2 border-t text-xs space-y-1">
                     {indices.map((index, idx) => (
                       <div key={idx} className="grid grid-cols-2 gap-2">
-                        <span className="font-medium">{index.index_type}:</span>
+                        <span className="font-medium">{getIndexDisplayName(index.index_type)}:</span>
                         <span className="text-gray-600">
                           {index.mean_value?.toFixed(3)} (±{index.std_dev?.toFixed(3)})
                         </span>

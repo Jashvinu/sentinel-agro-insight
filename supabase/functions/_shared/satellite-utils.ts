@@ -496,3 +496,24 @@ export function getCollectionScale(satellites: string[]): number {
   return 30;
 }
 
+/**
+ * Convert GeoJSON geometry (Polygon or MultiPolygon) to Earth Engine geometry
+ * Handles both Polygon and MultiPolygon types correctly
+ */
+export function geoJsonToEarthEngine(geometry: {
+  type: 'Polygon' | 'MultiPolygon';
+  coordinates: number[][][] | number[][][][];
+}): any {
+  if (geometry.type === 'Polygon') {
+    // Polygon: coordinates is number[][][] (array of rings, first is exterior)
+    const coords = geometry.coordinates as number[][][];
+    return ee.Geometry.Polygon(coords);
+  } else if (geometry.type === 'MultiPolygon') {
+    // MultiPolygon: coordinates is number[][][][] (array of polygons)
+    const coords = geometry.coordinates as number[][][][];
+    return ee.Geometry.MultiPolygon(coords);
+  } else {
+    throw new Error(`Unsupported geometry type: ${geometry.type}`);
+  }
+}
+

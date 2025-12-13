@@ -7,6 +7,9 @@ import {
   Bug,
   CloudLightning
 } from 'lucide-react';
+import { useWaterMetrics } from '@/hooks/useWaterMetrics';
+import { getAllFarms } from '@/services/farmService';
+import { useState, useEffect } from 'react';
 
 type DashboardInsight = {
   title: string;
@@ -87,10 +90,74 @@ const CARD_CONFIG: Array<{
   ];
 
 export const DashboardKPIs: React.FC = () => {
+  const [farmId, setFarmId] = useState<string | undefined>(undefined);
+  const { metrics, loading: waterLoading } = useWaterMetrics(farmId, 14);
+
+  // Get user's first farm
+  useEffect(() => {
+    getAllFarms().then(farms => {
+      if (farms.length > 0) {
+        setFarmId(farms[0].id);
+      }
+    });
+  }, []);
+
+  // Get water insight from real data or fallback to default
+  const getWaterInsight = (): DashboardInsight => {
+    if (waterLoading) {
+      // Show loading state
+      return {
+        ...DASHBOARD_INSIGHTS.water,
+        value: "Loading...",
+        subtitle: "Fetching water distribution data",
+        variant: "default" as const,
+      };
+    }
+
+    if (!metrics) {
+      // No data available - provide helpful message
+      return {
+        ...DASHBOARD_INSIGHTS.water,
+        value: "No data",
+        subtitle: "Fetching satellite data... This may take a moment",
+        variant: "default" as const,
+      };
+    }
+
+    // If metrics exist but balance is 0, it means no data was found
+    if (metrics.balancePercentage === 0 && metrics.meanMoisture === 0) {
+      return {
+        ...DASHBOARD_INSIGHTS.water,
+        value: "No data",
+        subtitle: metrics.subtitle || "No water data available - check farm polygon",
+        variant: "default" as const,
+      };
+    }
+
+    // Format status text
+    const statusText = metrics.status === 'balanced' 
+      ? 'balanced' 
+      : metrics.status === 'uneven' 
+      ? 'uneven' 
+      : 'critical';
+
+    return {
+      title: "Water Distribution",
+      value: `${metrics.balancePercentage}% ${statusText}`,
+      subtitle: metrics.subtitle,
+      trend: metrics.trend,
+      variant: metrics.variant,
+      focus: metrics.focus || DASHBOARD_INSIGHTS.water.focus,
+    };
+  };
+
+  const waterInsight = getWaterInsight();
+
   return (
-    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+    <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 sm:gap-5 lg:gap-6">
       {CARD_CONFIG.map(({ key, icon }) => {
-        const insight = DASHBOARD_INSIGHTS[key];
+        // Use real data for water, fallback for others
+        const insight = key === 'water' ? waterInsight : DASHBOARD_INSIGHTS[key];
         return (
           <KPICard
             key={key}

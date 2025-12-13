@@ -4,7 +4,7 @@
 import { handleCors } from '../_shared/cors.ts';
 import { successResponse, errorResponse } from '../_shared/response.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3';
-import { getAllSatelliteDates } from '../_shared/satellite-utils.ts';
+import { getAllSatelliteDates, geoJsonToEarthEngine } from '../_shared/satellite-utils.ts';
 
 // @deno-types="npm:@types/google__earthengine"
 import ee from 'npm:@google/earthengine@1.6.13';
@@ -183,8 +183,8 @@ Deno.serve(async (req) => {
     await authenticate(serviceAccountKey);
     console.log('Earth Engine authenticated successfully');
 
-    // Create Earth Engine geometry
-    const poi = ee.Geometry.Polygon(polygonGeometry.coordinates);
+    // Create Earth Engine geometry (handles both Polygon and MultiPolygon)
+    const poi = geoJsonToEarthEngine(polygonGeometry);
 
     // Get all satellite dates (optical + SAR)
     console.log('🛰️  Querying all satellites (Sentinel-2, Landsat 8/9, Sentinel-1 SAR)...');

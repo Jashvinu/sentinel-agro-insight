@@ -4,10 +4,22 @@
 import { handleCors } from '../_shared/cors.ts';
 import { successResponse, errorResponse } from '../_shared/response.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3';
+import * as satelliteUtils from '../_shared/satellite-utils.ts';
 import { getAllSatelliteDates, getIndicesForSatellite } from '../_shared/satellite-utils.ts';
 
 // @deno-types="npm:@types/google__earthengine"
 import ee from 'npm:@google/earthengine@1.6.13';
+
+// Get geoJsonToEarthEngine from the module (with fallback)
+const geoJsonToEarthEngine = satelliteUtils.geoJsonToEarthEngine || ((geometry: any) => {
+  if (geometry.type === 'Polygon') {
+    return ee.Geometry.Polygon(geometry.coordinates);
+  } else if (geometry.type === 'MultiPolygon') {
+    return ee.Geometry.MultiPolygon(geometry.coordinates);
+  } else {
+    throw new Error(`Unsupported geometry type: ${geometry.type}`);
+  }
+});
 
 // Earth Engine authentication
 function authenticate(serviceAccount: any): Promise<void> {
@@ -136,9 +148,8 @@ Deno.serve(async (req) => {
     for (const farm of farms) {
       console.log(`\n🌾 Processing farm: ${farm.name} (${farm.id})`);
 
-      // Create Earth Engine geometry from farm polygon
-      const polygonCoords = farm.geometry.coordinates;
-      const poi = ee.Geometry.Polygon(polygonCoords);
+      // Create Earth Engine geometry from farm polygon (handles both Polygon and MultiPolygon)
+      const poi = geoJsonToEarthEngine(farm.geometry);
 
       // Get existing observation dates for this farm from database
       if (!dryRun) {

@@ -5,6 +5,7 @@
 import { handleCors } from '../_shared/cors.ts';
 import { successResponse, errorResponse } from '../_shared/response.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3';
+import * as satelliteUtils from '../_shared/satellite-utils.ts';
 import {
   getMergedOpticalCollection,
   getDataSourceSummary,
@@ -15,6 +16,17 @@ import {
 // Import Earth Engine using npm: specifier for Deno
 // @deno-types="npm:@types/google__earthengine"
 import ee from 'npm:@google/earthengine@1.6.13';
+
+// Get geoJsonToEarthEngine from the module (with fallback)
+const geoJsonToEarthEngine = satelliteUtils.geoJsonToEarthEngine || ((geometry: any) => {
+  if (geometry.type === 'Polygon') {
+    return ee.Geometry.Polygon(geometry.coordinates);
+  } else if (geometry.type === 'MultiPolygon') {
+    return ee.Geometry.MultiPolygon(geometry.coordinates);
+  } else {
+    throw new Error(`Unsupported geometry type: ${geometry.type}`);
+  }
+});
 
 const OPTICAL_SATELLITES = ['Sentinel-2', 'Landsat-8', 'Landsat-9'] as const;
 const SATELLITE_DESCRIPTIONS: Record<string, string> = {
@@ -1343,10 +1355,17 @@ Deno.serve(async (req) => {
     if (polygon) {
       try {
         const polygonGeometry = JSON.parse(polygon);
-        if (polygonGeometry.type === 'Polygon' && polygonGeometry.coordinates) {
-          polygonCoords = polygonGeometry.coordinates;
-          poi = ee.Geometry.Polygon(polygonGeometry.coordinates);
-          console.log('Using custom polygon from request');
+        if ((polygonGeometry.type === 'Polygon' || polygonGeometry.type === 'MultiPolygon') && polygonGeometry.coordinates) {
+          // Use geoJsonToEarthEngine to handle both Polygon and MultiPolygon
+          poi = geoJsonToEarthEngine(polygonGeometry);
+          // Store coordinates for later use (for Polygon, use first ring; for MultiPolygon, use first polygon's first ring)
+          if (polygonGeometry.type === 'Polygon') {
+            polygonCoords = polygonGeometry.coordinates;
+          } else {
+            // For MultiPolygon, use the first polygon's coordinates
+            polygonCoords = polygonGeometry.coordinates[0];
+          }
+          console.log(`Using custom ${polygonGeometry.type} from request`);
         } else {
           throw new Error('Invalid polygon geometry format');
         }

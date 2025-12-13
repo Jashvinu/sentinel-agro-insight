@@ -11,10 +11,12 @@ import {
   User,
   Satellite,
   Menu,
-  X
+  X,
+  LogOut
 } from 'lucide-react';
 import { NAVIGATION_ITEMS, APP_CONFIG } from '@/constants';
 import { NavigationItem } from '@/types';
+import { useAuth } from '@/hooks/useAuth';
 
 interface NavigationProps {
   currentPage?: string;
@@ -28,6 +30,7 @@ export const Navigation: React.FC<NavigationProps> = ({
   className
 }) => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const { user, signOut } = useAuth();
 
   const handleNavigation = (page: string) => {
     if (onNavigate) {
@@ -97,9 +100,22 @@ export const Navigation: React.FC<NavigationProps> = ({
           <Button variant="ghost" size="sm">
             <Settings className="w-4 h-4" />
           </Button>
-          <Button variant="ghost" size="sm">
-            <User className="w-4 h-4" />
-          </Button>
+          {user && (
+            <div className="flex items-center space-x-2">
+              <span className="text-sm text-muted-foreground hidden sm:inline">
+                {user.email?.split('@')[0] || 'User'}
+              </span>
+              <Button 
+                variant="ghost" 
+                size="sm" 
+                onClick={() => signOut()}
+                className="flex items-center space-x-1"
+              >
+                <LogOut className="w-4 h-4" />
+                <span className="hidden sm:inline">Logout</span>
+              </Button>
+            </div>
+          )}
         </div>
       </nav>
 
@@ -118,7 +134,8 @@ export const Navigation: React.FC<NavigationProps> = ({
 
           <Button
             variant="ghost"
-            size="sm"
+            size="default"
+            className="p-2.5 min-w-[44px] min-h-[44px]"
             onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
           >
             {mobileMenuOpen ? (
@@ -141,17 +158,17 @@ export const Navigation: React.FC<NavigationProps> = ({
                   <Button
                     key={item.id}
                     variant={isActive ? "default" : "ghost"}
-                    size="sm"
+                    size="default"
                     className={cn(
-                      "flex flex-col items-center space-y-1 p-3 h-auto",
+                      "flex flex-col items-center space-y-1.5 p-4 h-auto min-h-[60px]",
                       isActive
                         ? "bg-primary text-primary-foreground"
                         : "text-muted-foreground"
                     )}
                     onClick={() => handleNavigation(item.id)}
                   >
-                    <Icon className="w-4 h-4" />
-                    <span className="text-xs font-medium">{item.label}</span>
+                    <Icon className="w-5 h-5" />
+                    <span className="text-xs sm:text-sm font-medium">{item.label}</span>
                   </Button>
                 );
               })}
@@ -161,7 +178,7 @@ export const Navigation: React.FC<NavigationProps> = ({
       </nav>
 
       {/* Mobile Bottom Navigation */}
-      <div className="lg:hidden fixed bottom-0 left-0 right-0 bg-card/95 backdrop-blur-sm border-t border-border/50 px-2 py-2 z-50">
+      <div className="lg:hidden fixed bottom-0 left-0 right-0 bg-card/95 backdrop-blur-sm border-t border-border/50 px-2 py-2.5 z-50 safe-area-bottom">
         <div className="flex justify-around">
           {NAVIGATION_ITEMS.slice(0, 5).map((item) => {
             const Icon = getIcon(item.id);
@@ -171,17 +188,17 @@ export const Navigation: React.FC<NavigationProps> = ({
               <Button
                 key={item.id}
                 variant="ghost"
-                size="sm"
+                size="default"
                 className={cn(
-                  "flex flex-col items-center space-y-1 px-2 py-2 h-auto min-w-0 flex-1",
+                  "flex flex-col items-center space-y-1 px-2 py-2.5 h-auto min-h-[56px] min-w-0 flex-1",
                   isActive
                     ? "text-primary"
                     : "text-muted-foreground"
                 )}
                 onClick={() => handleNavigation(item.id)}
               >
-                <Icon className="w-4 h-4" />
-                <span className="text-xs font-medium truncate">{item.label.split(' ')[0]}</span>
+                <Icon className="w-5 h-5" />
+                <span className="text-[10px] sm:text-xs font-medium truncate">{item.label.split(' ')[0]}</span>
               </Button>
             );
           })}

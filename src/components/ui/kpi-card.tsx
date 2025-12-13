@@ -62,29 +62,29 @@ export const KPICard: React.FC<KPICardProps> = ({
       getVariantStyles(),
       className
     )}>
-      <CardContent className="p-6">
-        <div className="flex items-start justify-between">
-          <div className="space-y-2">
-            <p className="text-sm font-medium text-muted-foreground">{title}</p>
-            <p className="text-2xl font-bold text-foreground">{value}</p>
+      <CardContent className="p-5 sm:p-6">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-2.5 flex-1 min-w-0">
+            <p className="text-sm sm:text-base font-semibold text-muted-foreground">{title}</p>
+            <p className="text-2xl sm:text-3xl font-bold text-foreground leading-tight">{value}</p>
             {subtitle && (
-              <p className="text-xs text-muted-foreground">{subtitle}</p>
+              <p className="text-xs sm:text-sm text-muted-foreground leading-relaxed">{subtitle}</p>
             )}
             {trend && (
-              <div className={cn("flex items-center space-x-1 text-sm", getTrendColor())}>
-                <span className="font-medium">
+              <div className={cn("flex items-center space-x-1.5 text-xs sm:text-sm pt-1", getTrendColor())}>
+                <span className="font-semibold">
                   {trend.value > 0 ? '+' : ''}{trend.value}%
                 </span>
-                <span className="text-xs">{trend.label}</span>
+                <span className="text-muted-foreground">{trend.label}</span>
               </div>
             )}
           </div>
           
           <div className={cn(
-            "p-3 rounded-lg bg-white/50 dark:bg-black/20",
+            "p-3 sm:p-3.5 rounded-lg bg-white/50 dark:bg-black/20 flex-shrink-0",
             getIconColor()
           )}>
-            <Icon className="w-5 h-5" />
+            <Icon className="w-5 h-5 sm:w-6 sm:h-6" />
           </div>
         </div>
         

@@ -30,7 +30,7 @@ interface IndexData {
 }
 
 interface IndicesTilesProps {
-  farmId?: string;
+  farmId?: string | null;
   selectedDate?: string;
   onIndexSelect?: (indexType: string) => void;
   allowedIndices?: string[];
@@ -45,38 +45,38 @@ const INDEX_CONFIG: Record<string, {
 }> = {
   ndvi: {
     icon: Leaf,
-    label: 'NDVI',
+    label: 'Vegetation Health',
     color: 'bg-green-500',
     unit: '',
-    description: 'Vegetation Health'
+    description: 'Plant health and vigor'
   },
   evi: {
     icon: Sprout,
-    label: 'EVI',
+    label: 'Enhanced Vegetation',
     color: 'bg-emerald-500',
     unit: '',
-    description: 'Enhanced Vegetation'
+    description: 'Advanced vegetation density'
   },
   savi: {
     icon: Mountain,
-    label: 'SAVI',
+    label: 'Soil Adjusted',
     color: 'bg-lime-500',
     unit: '',
-    description: 'Soil Adjusted'
+    description: 'Vegetation with soil correction'
   },
   msavi: {
     icon: Activity,
-    label: 'MSAVI',
+    label: 'Crop Health',
     color: 'bg-teal-500',
     unit: '',
-    description: 'Modified SAVI'
+    description: 'Improved crop monitoring'
   },
   ndwi: {
     icon: Droplets,
-    label: 'NDWI',
+    label: 'Water Content',
     color: 'bg-blue-500',
     unit: '',
-    description: 'Water Content'
+    description: 'Water and moisture levels'
   },
   nitrogen: {
     icon: TestTube,
@@ -155,7 +155,10 @@ export function IndicesTiles({
   }, [allowedIndices]);
 
   useEffect(() => {
-    if (!selectedDate) return;
+    if (!selectedDate || !farmId) {
+      setIndices([]);
+      return;
+    }
 
     async function fetchIndices() {
       try {

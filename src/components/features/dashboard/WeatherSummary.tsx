@@ -14,38 +14,6 @@ import {
 } from 'lucide-react';
 import { useWeather } from '@/hooks/use-weather';
 
-interface WeatherDayProps {
-  day: string;
-  high: number;
-  low: number;
-  icon: React.ComponentType<{ className?: string }>;
-  precipitation: number;
-  condition: string;
-}
-
-const WeatherDay: React.FC<WeatherDayProps> = ({
-  day,
-  high,
-  low,
-  icon: Icon,
-  precipitation,
-  condition
-}) => (
-  <div className="flex flex-col items-center space-y-2 p-3 rounded-lg bg-muted/30 hover:bg-muted/50 transition-colors">
-    <p className="text-xs font-medium text-muted-foreground">{day}</p>
-    <Icon className="w-6 h-6 text-accent" />
-    <div className="text-center">
-      <p className="text-sm font-semibold text-foreground">{high}°</p>
-      <p className="text-xs text-muted-foreground">{low}°</p>
-    </div>
-    {precipitation > 0 && (
-      <div className="flex items-center space-x-1">
-        <Droplets className="w-3 h-3 text-accent" />
-        <span className="text-xs text-accent">{precipitation}mm</span>
-      </div>
-    )}
-  </div>
-);
 
 export const WeatherSummary: React.FC = () => {
   const { data, loading, error, fetchWeather } = useWeather();
@@ -131,94 +99,96 @@ export const WeatherSummary: React.FC = () => {
 
   return (
     <Card className="overflow-hidden">
-      <CardHeader className="pb-3">
+      <CardHeader className="pb-2">
         <div className="flex items-center justify-between">
-          <CardTitle className="flex items-center space-x-2">
-            <Cloud className="w-5 h-5 text-accent" />
-            <span>7-Day Weather</span>
+          <CardTitle className="flex items-center space-x-2 text-sm">
+            <Cloud className="w-4 h-4 text-accent" />
+            <span>Weather</span>
           </CardTitle>
-          <div className="flex items-center space-x-2">
-            <Badge variant="outline" className="text-xs">
-              {data ? `${data.location.latitude.toFixed(1)}°N ${data.location.longitude.toFixed(1)}°E` : 'Loading...'}
-            </Badge>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => fetchWeather(defaultLatitude, defaultLongitude)}
-              disabled={loading}
-            >
-              {loading ? (
-                <Loader2 className="w-3 h-3 animate-spin" />
-              ) : (
-                <RefreshCw className="w-3 h-3" />
-              )}
-            </Button>
-          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => fetchWeather(defaultLatitude, defaultLongitude)}
+            disabled={loading}
+            className="h-6 w-6 p-0"
+          >
+            {loading ? (
+              <Loader2 className="w-3 h-3 animate-spin" />
+            ) : (
+              <RefreshCw className="w-3 h-3" />
+            )}
+          </Button>
         </div>
       </CardHeader>
 
-      <CardContent className="space-y-4">
-        {/* Current Conditions */}
+      <CardContent className="space-y-3">
+        {/* Current Conditions - Compact */}
         {currentConditions && (
-          <div className="grid grid-cols-3 gap-4 p-4 bg-gradient-sky/10 rounded-lg">
-            <div className="flex items-center space-x-2">
-              <Thermometer className="w-4 h-4 text-warning" />
-              <div>
-                <p className="text-xs text-muted-foreground">Temperature</p>
-                <p className="text-sm font-semibold">{currentConditions.currentTemp}°C</p>
-                <p className="text-xs text-muted-foreground">Feels {currentConditions.currentApparent}°C</p>
-              </div>
+          <div className="grid grid-cols-3 gap-2 p-2 bg-gradient-sky/10 rounded-lg">
+            <div className="text-center">
+              <Thermometer className="w-3 h-3 text-warning mx-auto mb-1" />
+              <p className="text-xs font-semibold">{currentConditions.currentTemp}°C</p>
+              <p className="text-[10px] text-muted-foreground">Temp</p>
             </div>
-            <div className="flex items-center space-x-2">
-              <Wind className="w-4 h-4 text-accent" />
-              <div>
-                <p className="text-xs text-muted-foreground">Wind Speed</p>
-                <p className="text-sm font-semibold">{currentConditions.currentWind} km/h</p>
-              </div>
+            <div className="text-center">
+              <Wind className="w-3 h-3 text-accent mx-auto mb-1" />
+              <p className="text-xs font-semibold">{currentConditions.currentWind}</p>
+              <p className="text-[10px] text-muted-foreground">km/h</p>
             </div>
-            <div className="flex items-center space-x-2">
-              <Cloud className="w-4 h-4 text-accent" />
-              <div>
-                <p className="text-xs text-muted-foreground">Cloud Cover</p>
-                <p className="text-sm font-semibold">{currentConditions.currentCloud}%</p>
-              </div>
+            <div className="text-center">
+              <Cloud className="w-3 h-3 text-accent mx-auto mb-1" />
+              <p className="text-xs font-semibold">{currentConditions.currentCloud}%</p>
+              <p className="text-[10px] text-muted-foreground">Cloud</p>
             </div>
           </div>
         )}
 
         {error && (
-          <div className="p-4 bg-destructive/10 border border-destructive/20 rounded-lg">
-            <p className="text-sm text-destructive">Error: {error}</p>
+          <div className="p-2 bg-destructive/10 border border-destructive/20 rounded-lg">
+            <p className="text-xs text-destructive">Error: {error}</p>
           </div>
         )}
 
-        {/* 7-Day Forecast */}
+        {/* 7-Day Forecast - Compact */}
         <div className="grid grid-cols-7 gap-1">
           {loading ? (
             Array.from({ length: 7 }).map((_, index) => (
-              <div key={index} className="flex flex-col items-center space-y-2 p-3 rounded-lg bg-muted/30">
-                <div className="w-6 h-6 bg-muted/50 rounded animate-pulse" />
-                <div className="w-8 h-3 bg-muted/50 rounded animate-pulse" />
-                <div className="w-6 h-3 bg-muted/50 rounded animate-pulse" />
+              <div key={index} className="flex flex-col items-center space-y-1 p-2 rounded-lg bg-muted/30">
+                <div className="w-4 h-4 bg-muted/50 rounded animate-pulse" />
+                <div className="w-6 h-2 bg-muted/50 rounded animate-pulse" />
+                <div className="w-4 h-2 bg-muted/50 rounded animate-pulse" />
               </div>
             ))
           ) : (
             weatherData.map((day, index) => (
-              <WeatherDay key={index} {...day} />
+              <div key={index} className="flex flex-col items-center space-y-1 p-2 rounded-lg bg-muted/30 hover:bg-muted/50 transition-colors">
+                <p className="text-[10px] font-medium text-muted-foreground">{day.day}</p>
+                {React.createElement(day.icon, { className: "w-4 h-4 text-accent" })}
+                <div className="text-center">
+                  <p className="text-xs font-semibold text-foreground">{day.high}°</p>
+                  <p className="text-[10px] text-muted-foreground">{day.low}°</p>
+                </div>
+                {day.precipitation > 0 && (
+                  <div className="flex items-center space-x-0.5">
+                    <Droplets className="w-2 h-2 text-accent" />
+                    <span className="text-[10px] text-accent">{day.precipitation}mm</span>
+                  </div>
+                )}
+              </div>
             ))
           )}
         </div>
 
-        {/* Weekly Summary */}
-        <div className="flex items-center justify-between p-3 bg-muted/30 rounded-lg">
-          <div className="flex items-center space-x-2">
-            <Droplets className="w-4 h-4 text-accent" />
-            <span className="text-sm text-muted-foreground">Expected Rain:</span>
-            <span className="text-sm font-semibold text-foreground">{totalPrecipitation.toFixed(1)}mm</span>
+        {/* Weekly Summary - Compact */}
+        <div className="flex items-center justify-between p-2 bg-muted/30 rounded-lg">
+          <div className="flex items-center space-x-1">
+            <Droplets className="w-3 h-3 text-accent" />
+            <span className="text-xs text-muted-foreground">Rain:</span>
+            <span className="text-xs font-semibold text-foreground">{totalPrecipitation.toFixed(1)}mm</span>
           </div>
-          <div className="flex items-center space-x-2">
-            <span className="text-sm text-muted-foreground">Avg Temp:</span>
-            <span className="text-sm font-semibold text-foreground">
+          <div className="flex items-center space-x-1">
+            <span className="text-xs text-muted-foreground">Avg:</span>
+            <span className="text-xs font-semibold text-foreground">
               {weatherData.length > 0
                 ? Math.round(weatherData.reduce((sum, day) => sum + (day.high + day.low) / 2, 0) / weatherData.length)
                 : '--'

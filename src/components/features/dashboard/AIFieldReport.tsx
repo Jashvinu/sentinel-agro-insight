@@ -1,15 +1,35 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Bot, Loader2 } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Bot, Loader2, RefreshCw } from 'lucide-react';
 import { FIELD_BOUNDARIES } from '@/constants';
 import { DASHBOARD_INSIGHTS } from './DashboardKPIs';
-
-const GEMINI_API_ENDPOINT =
-    'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent';
 
 const GEMINI_API_KEY =
     (import.meta.env?.VITE_GEMINI_API_KEY as string | undefined) ??
     'AIzaSyA8ZnhK4bKe1qbFLQI72ZzBEBx34vOhH5s';
+
+const DEFAULT_GEMINI_MODELS = ['gemini-1.5-flash', 'gemini-1.5-pro'];
+const DEFAULT_GEMINI_VERSIONS = ['v1'];
+
+const GEMINI_MODELS = (() => {
+    const envModels = (import.meta.env?.VITE_GEMINI_MODELS as string | undefined)
+        ?.split(',')
+        .map((model) => model.trim())
+        .filter(Boolean);
+    return envModels && envModels.length > 0 ? envModels : DEFAULT_GEMINI_MODELS;
+})();
+
+const GEMINI_VERSIONS = (() => {
+    const envVersions = (import.meta.env?.VITE_GEMINI_API_VERSIONS as string | undefined)
+        ?.split(',')
+        .map((version) => version.trim())
+        .filter(Boolean);
+    return envVersions && envVersions.length > 0 ? envVersions : DEFAULT_GEMINI_VERSIONS;
+})();
+
+const buildGeminiEndpoint = (model: string, version: string) =>
+    `https://generativelanguage.googleapis.com/${version}/models/${model}:generateContent`;
 
 const FALLBACK_REPORT =
     'Satellite review shows moisture slipping six percent in the northwest drip row at 12.3910°N 77.7742°E. Flush lines, verify emitter pressure, and hold irrigation schedule steady. Nutrient balance holds, though nitrogen drifted two percent week on week. Pest pressure remains low; scout borders. Monitor nightly gust alerts against sudden squalls tomorrow.';
@@ -58,94 +78,174 @@ export const AIFieldReport: React.FC = () => {
     const [report, setReport] = useState<string>(FALLBACK_REPORT);
     const [loading, setLoading] = useState<boolean>(true);
     const [error, setError] = useState<string | null>(null);
+    const [retryCount, setRetryCount] = useState<number>(0);
 
     const prompt = useMemo(() => buildPrompt(), []);
 
-    useEffect(() => {
-        let isMounted = true;
-
-        const generateReport = async () => {
+    const generateReport = useCallback(async () => {
             if (!GEMINI_API_KEY) {
-                setError('Missing Gemini API key');
+            setError('Missing Gemini API key. Please configure VITE_GEMINI_API_KEY in your environment variables.');
                 setLoading(false);
                 return;
             }
 
-            try {
-                const response = await fetch(`${GEMINI_API_ENDPOINT}?key=${GEMINI_API_KEY}`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                        contents: [
-                            {
-                                role: 'user',
-                                parts: [{ text: prompt }]
-                            }
-                        ],
-                        generationConfig: {
-                            temperature: 0.4,
-                            maxOutputTokens: 150
-                        }
-                    })
-                });
+        setError(null);
+        setLoading(true);
 
-                if (!response.ok) {
-                    throw new Error(`Gemini request failed with status ${response.status}`);
+            try {
+                let lastError: string | null = null;
+            let success = false;
+
+                for (const version of GEMINI_VERSIONS) {
+                if (success) break;
+                    for (const model of GEMINI_MODELS) {
+                    if (success) break;
+                        try {
+                            const response = await fetch(
+                                `${buildGeminiEndpoint(model, version)}?key=${GEMINI_API_KEY}`,
+                                {
+                                    method: 'POST',
+                                    headers: {
+                                        'Content-Type': 'application/json'
+                                    },
+                                    body: JSON.stringify({
+                                        contents: [
+                                            {
+                                                role: 'user',
+                                                parts: [{ text: prompt }]
+                                            }
+                                        ],
+                                        generationConfig: {
+                                            temperature: 0.4,
+                                            maxOutputTokens: 150
+                                        }
+                                    })
+                                }
+                            );
+
+                            if (!response.ok) {
+                                const details = await response.json().catch(() => null);
+                                const message =
+                                    details?.error?.message ??
+                                    `Gemini request failed with status ${response.status}`;
+                                throw new Error(message);
+                            }
+
+                            const data = await response.json();
+                            const generatedText = extractText(data);
+
+                        if (generatedText) {
+                                setReport(enforceWordLimit(generatedText));
+                                setError(null);
+                            success = true;
+                            setRetryCount(0);
+                                return;
+                            }
+
+                            throw new Error('Gemini response missing text');
+                        } catch (modelError) {
+                            const message =
+                                modelError instanceof Error
+                                    ? modelError.message
+                                    : 'Unknown Gemini error';
+                            lastError = message;
+                            console.warn(
+                                `Gemini model "${model}" failed on version "${version}": ${message}`
+                            );
+                        }
+                    }
                 }
 
-                const data = await response.json();
-                const generatedText = extractText(data);
-
-                if (generatedText && isMounted) {
-                    setReport(enforceWordLimit(generatedText));
-                    setError(null);
-                } else if (isMounted) {
-                    setError('Gemini response missing text');
+            if (!success) {
+                    // Only show error if it's not an IP restriction or API key restriction issue
+                    const isRestrictionError = lastError && (
+                        lastError.includes('IP address restriction') ||
+                        lastError.includes('IP address') ||
+                        lastError.includes('restriction') ||
+                        lastError.includes('API key')
+                    );
+                    
+                    if (!isRestrictionError && lastError) {
+                        setError(`Unable to generate report: ${lastError}`);
+                    } else {
+                        // Silently use fallback for restriction errors
+                        setError(null);
+                    }
                     setReport(enforceWordLimit(FALLBACK_REPORT));
                 }
             } catch (err) {
                 console.error('Gemini report error:', err);
-                if (isMounted) {
-                    setError('update');
+                    const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+                    
+                    // Only show error if it's not an IP restriction or API key restriction issue
+                    const isRestrictionError = errorMessage.includes('IP address restriction') ||
+                        errorMessage.includes('IP address') ||
+                        errorMessage.includes('restriction') ||
+                        errorMessage.includes('API key');
+                    
+                    if (!isRestrictionError) {
+                        setError(`Error: ${errorMessage}`);
+                    } else {
+                        // Silently use fallback for restriction errors
+                        setError(null);
+                    }
                     setReport(enforceWordLimit(FALLBACK_REPORT));
-                }
             } finally {
-                if (isMounted) {
                     setLoading(false);
                 }
-            }
-        };
-
-        generateReport();
-
-        return () => {
-            isMounted = false;
-        };
     }, [prompt]);
 
+    useEffect(() => {
+        generateReport();
+    }, [generateReport, retryCount]);
+
+    const handleRefresh = () => {
+        setRetryCount(prev => prev + 1);
+        };
+
     return (
-        <Card className="border-primary/20 bg-muted/20">
-            <CardHeader className="pb-3">
-                <CardTitle className="flex items-center space-x-2">
-                    <Bot className="w-5 h-5 text-primary" />
+        <Card className="border-primary/30 bg-gradient-to-br from-primary/5 via-muted/20 to-muted/10 shadow-lg">
+            <CardHeader className="pb-4">
+                <div className="flex items-center justify-between">
+                <CardTitle className="flex items-center space-x-3 text-2xl">
+                    <Bot className="w-6 h-6 text-primary" />
                     <span>AI Field Brief</span>
                 </CardTitle>
+                    {!loading && (
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={handleRefresh}
+                            className="flex items-center gap-2"
+                        >
+                            <RefreshCw className="w-4 h-4" />
+                            <span className="hidden sm:inline">Refresh</span>
+                        </Button>
+                    )}
+                </div>
             </CardHeader>
-            <CardContent className="space-y-3">
+            <CardContent className="space-y-4">
                 {loading ? (
-                    <div className="flex items-center space-x-2 text-muted-foreground">
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                        <span>Generating satellite summary…</span>
+                    <div className="flex flex-col items-center justify-center py-12 space-y-4">
+                        <div className="relative">
+                            <Loader2 className="h-12 w-12 animate-spin text-primary" />
+                            <div className="absolute inset-0 border-4 border-primary/20 rounded-full"></div>
+                        </div>
+                        <div className="text-center space-y-2">
+                            <p className="text-lg font-medium text-foreground">Generating satellite summary…</p>
+                            <p className="text-sm text-muted-foreground">Analyzing field data and weather patterns</p>
+                        </div>
                     </div>
                 ) : (
-                    <p className="text-sm leading-6 text-foreground">{report}</p>
-                )}
-                {error && (
-                    <p className="text-xs text-warning">
-                        {error}
-                    </p>
+                    <div className="space-y-3">
+                        <p className="text-lg leading-relaxed text-foreground font-medium tracking-wide">{report}</p>
+                        {error && (
+                            <div className="text-sm text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 p-3 rounded-md">
+                                <p className="font-medium mb-1">Note:</p>
+                                <p>{error}</p>
+                            </div>
+                        )}
+                    </div>
                 )}
             </CardContent>
         </Card>

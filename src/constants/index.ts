@@ -71,7 +71,7 @@ export const DASHBOARD_CONFIG = {
     kpiCards: [
         {
             id: 'ndvi',
-            title: 'NDVI Index',
+            title: 'Vegetation Health',
             description: 'Vegetation health index',
             unit: '',
             minValue: 0,
@@ -263,7 +263,7 @@ export const AGRICULTURAL_INDICES = {
     // Vegetation Indices
     ndvi: {
         id: 'ndvi',
-        name: 'NDVI',
+        name: 'Vegetation Health',
         category: 'Vegetation',
         unit: 'Index',
         description: 'Normalized Difference Vegetation Index',
@@ -280,7 +280,7 @@ export const AGRICULTURAL_INDICES = {
     },
     evi: {
         id: 'evi',
-        name: 'EVI',
+        name: 'Enhanced Vegetation',
         category: 'Vegetation',
         unit: 'Index',
         description: 'Enhanced Vegetation Index',
@@ -314,7 +314,7 @@ export const AGRICULTURAL_INDICES = {
     },
     msavi: {
         id: 'msavi',
-        name: 'MSAVI',
+        name: 'Crop Health',
         category: 'Vegetation',
         unit: 'Index',
         description: 'Modified Soil Adjusted Vegetation Index',
@@ -331,7 +331,7 @@ export const AGRICULTURAL_INDICES = {
     },
     ndwi: {
         id: 'ndwi',
-        name: 'NDWI',
+        name: 'Water Content',
         category: 'Water',
         unit: 'Index',
         description: 'Normalized Difference Water Index',

@@ -86,7 +86,7 @@ export const AlertsOverview: React.FC = () => {
     {
       id: '1',
       severity: 'medium',
-      title: 'NDVI Decline Detected',
+      title: 'Vegetation Health Decline Detected',
       description: 'Northern sector showing 8% decrease in vegetation health over last 7 days',
       timestamp: '2 hours ago',
       category: 'Vegetation'

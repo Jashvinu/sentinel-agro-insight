@@ -222,3 +222,24 @@ export async function retry<T>(
 
     throw lastError!;
 } 
+
+// Get display name for agricultural index
+export function getIndexDisplayName(indexType: string): string {
+  const displayNames: Record<string, string> = {
+    'ndvi': 'Vegetation Health',
+    'evi': 'Enhanced Vegetation',
+    'savi': 'Soil Adjusted',
+    'msavi': 'Crop Health',
+    'ndwi': 'Water Content',
+    'nitrogen': 'Nitrogen',
+    'phosphorus': 'Phosphorus',
+    'potassium': 'Potassium',
+    'salinity': 'Salinity',
+    'ph': 'pH',
+    'moisture': 'Moisture',
+    'carbon': 'Carbon',
+    'sar_moisture': 'SAR Moisture'
+  };
+  
+  return displayNames[indexType.toLowerCase()] || capitalize(indexType);
+}
