@@ -8,8 +8,8 @@ import { FieldMap } from '@/components/features/map/field-map';
 import { AgriculturalIndices } from '@/components/features/dashboard/AgriculturalIndices';
 import { FarmTimeline } from '@/components/features/dashboard/FarmTimeline';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { TrendingUp, BarChart3, MapPinned } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { APP_CONFIG, DATA_SOURCES, FIELD_BOUNDARIES } from '@/constants';
@@ -104,33 +104,48 @@ const Index = () => {
           </div>
         </div>
 
-        {/* Agricultural Indices Dashboard */}
-        <AgriculturalIndices />
-
-        {/* Farm Timeline - Historical Data */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          <div className="lg:col-span-2">
-            <AlertsOverview />
-          </div>
-          <div>
-            {farmLoading ? (
-              <Card className="p-4">
-                <div className="text-center text-muted-foreground py-8">
-                  <p className="font-semibold">Loading farm data...</p>
-                </div>
-              </Card>
-            ) : farmId ? (
-              <FarmTimeline farmId={farmId} />
-            ) : (
-              <Card className="p-4">
-                <div className="text-center text-muted-foreground py-8">
-                  <p className="font-semibold">Abe's farm not found</p>
-                  <p className="text-sm">Please create Abe's farm first</p>
-                </div>
-              </Card>
-            )}
-          </div>
+        {/* Compact Cards Row */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          <AlertsOverview />
+          {farmLoading ? (
+            <Card className="p-4">
+              <div className="text-center text-muted-foreground py-8">
+                <p className="font-semibold">Loading farm data...</p>
+              </div>
+            </Card>
+          ) : farmId ? (
+            <FarmTimeline farmId={farmId} />
+          ) : (
+            <Card className="p-4">
+              <div className="text-center text-muted-foreground py-8">
+                <p className="font-semibold">Abe's farm not found</p>
+                <p className="text-sm">Please create Abe's farm first</p>
+              </div>
+            </Card>
+          )}
         </div>
+
+        {/* Agricultural Indices - Collapsible Section */}
+        <details className="group">
+          <summary className="cursor-pointer list-none">
+            <Card className="hover:border-primary/50 transition-colors">
+              <CardContent className="p-4 flex items-center justify-between">
+                <span className="font-semibold text-foreground">Agricultural Indices</span>
+                <svg 
+                  className="w-5 h-5 text-muted-foreground transition-transform group-open:rotate-180" 
+                  fill="none" 
+                  stroke="currentColor" 
+                  viewBox="0 0 24 24"
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                </svg>
+              </CardContent>
+            </Card>
+          </summary>
+          <div className="mt-4 animate-accordion-down">
+            <AgriculturalIndices />
+          </div>
+        </details>
 
         {/* Data Sources Footer */}
         <Card className="bg-muted/30 border-muted">
