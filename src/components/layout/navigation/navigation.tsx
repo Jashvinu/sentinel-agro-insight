@@ -3,10 +3,7 @@ import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import {
   Home,
-  Map,
-  BarChart3,
-  AlertTriangle,
-  Cloud,
+  TrendingUp,
   Settings,
   User,
   Satellite,
@@ -43,11 +40,7 @@ export const Navigation: React.FC<NavigationProps> = ({
   const getIcon = (id: string) => {
     const iconMap = {
       dashboard: Home,
-      map: Map,
-      analytics: BarChart3,
-      alerts: AlertTriangle,
-      weather: Cloud,
-      settings: Settings,
+      'yield-prediction': TrendingUp,
     };
     return iconMap[id as keyof typeof iconMap] || Home;
   };
@@ -105,9 +98,9 @@ export const Navigation: React.FC<NavigationProps> = ({
               <span className="text-sm text-muted-foreground hidden sm:inline">
                 {user.email?.split('@')[0] || 'User'}
               </span>
-              <Button 
-                variant="ghost" 
-                size="sm" 
+              <Button
+                variant="ghost"
+                size="sm"
                 onClick={() => signOut()}
                 className="flex items-center space-x-1"
               >

@@ -6,7 +6,6 @@ import { WeatherSummary } from '@/components/features/dashboard/WeatherSummary';
 import { AlertsOverview } from '@/components/features/dashboard/AlertsOverview';
 import { FieldMap } from '@/components/features/map/field-map';
 import { AgriculturalIndices } from '@/components/features/dashboard/AgriculturalIndices';
-import { FarmTimeline } from '@/components/features/dashboard/FarmTimeline';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -14,12 +13,10 @@ import { TrendingUp, BarChart3, MapPinned } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { APP_CONFIG, DATA_SOURCES, FIELD_BOUNDARIES } from '@/constants';
 import { formatDateTime } from '@/utils';
-import { useAbeFarm } from '@/hooks/useAbeFarm';
 
 const Index = () => {
   const [currentPage, setCurrentPage] = useState('dashboard');
   const navigate = useNavigate();
-  const { farmId, loading: farmLoading } = useAbeFarm();
 
   return (
     <div className="min-h-screen bg-background pb-20 lg:pb-0">
@@ -58,7 +55,7 @@ const Index = () => {
           {/* Field Map - Takes 3 columns on large screens (bigger) */}
           <div className="lg:col-span-3">
             <div className="relative">
-              <FieldMap height="h-[500px] sm:h-[600px] lg:h-[650px]" farmId={farmId} />
+              <FieldMap height="h-[500px] sm:h-[600px] lg:h-[650px]" />
             </div>
           </div>
 
@@ -107,22 +104,18 @@ const Index = () => {
         {/* Compact Cards Row */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           <AlertsOverview />
-          {farmLoading ? (
-            <Card className="p-4">
-              <div className="text-center text-muted-foreground py-8">
-                <p className="font-semibold">Loading farm data...</p>
-              </div>
-            </Card>
-          ) : farmId ? (
-            <FarmTimeline farmId={farmId} />
-          ) : (
-            <Card className="p-4">
-              <div className="text-center text-muted-foreground py-8">
-                <p className="font-semibold">Abe's farm not found</p>
-                <p className="text-sm">Please create Abe's farm first</p>
-              </div>
-            </Card>
-          )}
+          <Card className="p-4">
+            <div className="text-center text-muted-foreground py-8">
+              <p className="font-semibold">Farm Timeline</p>
+              <p className="text-sm">Select a farm to view timeline</p>
+            </div>
+          </Card>
+          <Card className="p-4">
+            <div className="text-center text-muted-foreground py-8">
+              <p className="font-semibold">Abe's farm not found</p>
+              <p className="text-sm">Please create Abe's farm first</p>
+            </div>
+          </Card>
         </div>
 
         {/* Agricultural Indices - Collapsible Section */}

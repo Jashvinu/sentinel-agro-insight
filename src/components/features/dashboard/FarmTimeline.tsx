@@ -25,23 +25,17 @@ interface TimelineData {
 }
 
 interface FarmTimelineProps {
-  farmId?: string | null;
+  farmId?: string;
   onDateSelect?: (date: string, indices: any[]) => void;
 }
 
-export function FarmTimeline({ farmId, onDateSelect }: FarmTimelineProps) {
+export function FarmTimeline({ farmId = 'df43eedf-850d-454c-9fbf-36a052be10c0', onDateSelect }: FarmTimelineProps) {
   const [timeline, setTimeline] = useState<TimelineData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!farmId) {
-      setLoading(false);
-      setError('No farm ID provided');
-      return;
-    }
-
     async function fetchTimeline() {
       try {
         setLoading(true);

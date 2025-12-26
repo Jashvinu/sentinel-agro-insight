@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Clear Cache & Force Sync</title>
+    <style>
+        body {
+            font-family: system-ui, -apple-system, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #0f172a;
+            color: #e2e8f0;
+        }
+        .card {
+            background: #1e293b;
+            border: 1px solid #334155;
+            border-radius: 12px;
+            padding: 30px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+        }
+        h1 {
+            color: #10b981;
+            margin-top: 0;
+        }
+        button {
+            background: #10b981;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            font-size: 16px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: all 0.2s;
+        }
+        button:hover {
+            background: #059669;
+            transform: translateY(-1px);
+        }
+        button:active {
+            transform: translateY(0);
+        }
+        .status {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 8px;
+            display: none;
+        }
+        .status.success {
+            background: #065f46;
+            border: 1px solid #10b981;
+            display: block;
+        }
+        .status.error {
+            background: #7f1d1d;
+            border: 1px solid #ef4444;
+            display: block;
+        }
+        .code {
+            background: #0f172a;
+            border: 1px solid #334155;
+            padding: 15px;
+            border-radius: 6px;
+            font-family: 'Courier New', monospace;
+            margin: 15px 0;
+            overflow-x: auto;
+        }
+        .list {
+            background: #1e293b;
+            border-left: 3px solid #10b981;
+            padding: 15px 20px;
+            margin: 15px 0;
+        }
+        .list li {
+            margin: 8px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>🔧 Clear Cache & Force Water Metrics Sync</h1>
+        
+        <p>This will:</p>
+        <div class="list">
+            <ul>
+                <li>✅ Clear the 1-hour sync throttle</li>
+                <li>✅ Clear any stale cached data</li>
+                <li>✅ Force immediate sync with the NEW fixed logic</li>
+                <li>✅ Populate water metrics from actual observation dates</li>
+            </ul>
+        </div>
+
+        <button onclick="clearAndSync()">Clear Cache & Force Sync</button>
+        
+        <div id="status" class="status"></div>
+
+        <div style="margin-top: 30px; padding-top: 30px; border-top: 1px solid #334155;">
+            <h3>What's happening?</h3>
+            <p><strong>The Problem:</strong> 404 errors occur when requesting imagery for dates that don't have satellite coverage.</p>
+            <p><strong>The Solution:</strong> The sync system is designed to gracefully skip these dates and only cache data for dates with available imagery.</p>
+            
+            <h3 style="margin-top: 20px;">Manual Alternative:</h3>
+            <p>Or run this in your browser console (F12):</p>
+            <div class="code">
+sessionStorage.removeItem('last_satellite_sync');
+sessionStorage.removeItem('last_water_sync');
+localStorage.clear();
+window.location.reload();
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function clearAndSync() {
+            const statusEl = document.getElementById('status');
+            
+            try {
+                // Clear session storage
+                sessionStorage.removeItem('last_satellite_sync');
+                sessionStorage.removeItem('last_water_sync');
+                
+                // Clear local storage
+                localStorage.clear();
+                
+                // Show success message
+                statusEl.className = 'status success';
+                statusEl.innerHTML = `
+                    <strong>✅ Cache Cleared!</strong><br>
+                    Reloading page in 2 seconds to trigger sync...<br>
+                    <small>Watch the browser console (F12) to see sync progress</small>
+                `;
+                
+                // Reload after 2 seconds
+                setTimeout(() => {
+                    window.location.href = 'http://localhost:5173'; // Update this URL if your app runs on a different port
+                }, 2000);
+                
+            } catch (error) {
+                statusEl.className = 'status error';
+                statusEl.innerHTML = `
+                    <strong>❌ Error:</strong><br>
+                    ${error.message}<br>
+                    <small>Try the manual method in the console instead</small>
+                `;
+            }
+        }
+    </script>
+</body>
+</html>
+
+
+
+
+
+

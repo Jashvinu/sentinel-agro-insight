@@ -61,3 +61,8 @@ Or manually via Supabase Dashboard:
 2. Find farms with "evergreen" in name
 3. Update `user_id` to: `39682409-670b-4367-b4d3-14eaa011470a`
 
+
+
+
+
+

@@ -55,24 +55,13 @@ function calculateBounds(geometry: { type: 'Polygon' | 'MultiPolygon'; coordinat
 /**
  * Save a farm polygon to the database
  */
-export async function saveFarm(farmData: FarmInsert): Promise<{ farm: Farm | null; error: Error | null }> {
+export async function saveFarm(farmData: FarmInsert): Promise<Farm | null> {
   try {
-    // Get current user
-    const { data: { user } } = await supabase.auth.getUser();
-    
     // Calculate bounds if not provided
     const bounds = farmData.bounds || calculateBounds(farmData.geometry);
     
     // Calculate area if not provided
     const area_hectares = farmData.area_hectares || calculateArea(farmData.geometry);
-    
-    console.log('Saving farm:', {
-      name: farmData.name,
-      geometryType: farmData.geometry.type,
-      bounds,
-      area_hectares,
-      user_id: user?.id || farmData.user_id
-    });
     
     const { data, error } = await supabase
       .from('farms')
@@ -81,47 +70,31 @@ export async function saveFarm(farmData: FarmInsert): Promise<{ farm: Farm | nul
         geometry: farmData.geometry,
         bounds,
         area_hectares,
-        user_id: user?.id || farmData.user_id || null,
       })
       .select()
       .single();
     
     if (error) {
       console.error('Error saving farm:', error);
-      return { 
-        farm: null, 
-        error: new Error(error.message || `Database error: ${error.code || 'Unknown error'}`) 
-      };
+      throw error;
     }
     
-    return { farm: data as Farm, error: null };
+    return data as Farm;
   } catch (error) {
     console.error('Failed to save farm:', error);
-    return { 
-      farm: null, 
-      error: error instanceof Error ? error : new Error('Unknown error occurred while saving farm') 
-    };
+    return null;
   }
 }
 
 /**
- * Get all farms from the database (filtered by current user if authenticated)
+ * Get all farms from the database
  */
 export async function getAllFarms(): Promise<Farm[]> {
   try {
-    // Get current user
-    const { data: { user } } = await supabase.auth.getUser();
-    
-    let query = supabase
+    const { data, error } = await supabase
       .from('farms')
-      .select('*');
-    
-    // If user is authenticated, only get their farms
-    if (user) {
-      query = query.eq('user_id', user.id);
-    }
-    
-    const { data, error } = await query.order('created_at', { ascending: false });
+      .select('*')
+      .order('created_at', { ascending: false });
     
     if (error) {
       console.error('Error fetching farms:', error);
@@ -154,36 +127,6 @@ export async function getFarmById(id: string): Promise<Farm | null> {
     return data as Farm;
   } catch (error) {
     console.error('Failed to fetch farm:', error);
-    return null;
-  }
-}
-
-/**
- * Get Abe's farm ID by searching for farms with "Abe" or "Abe's" in the name
- */
-export async function getAbeFarmId(): Promise<string | null> {
-  try {
-    const { data, error } = await supabase
-      .from('farms')
-      .select('id, name')
-      .or('name.ilike.%Abe%,name.ilike.%abe%')
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
-    
-    if (error) {
-      console.error('Error fetching Abe\'s farm:', error);
-      return null;
-    }
-    
-    if (!data) {
-      console.warn('Abe\'s farm not found in database');
-      return null;
-    }
-    
-    return data.id;
-  } catch (error) {
-    console.error('Failed to fetch Abe\'s farm:', error);
     return null;
   }
 }

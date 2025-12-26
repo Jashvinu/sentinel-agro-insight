@@ -86,15 +86,15 @@ Deno.serve(async (req) => {
 
     console.log(`🌾 Found ${farms.length} farm(s) to process`);
 
-    // Calculate date range
-    const endDate = new Date();
+    // Calculate date range - fetch all available dates up to today
+    const endDate = new Date(); // Use today as end date
     const startDate = new Date();
     startDate.setMonth(startDate.getMonth() - monthsBack);
 
     const startDateStr = startDate.toISOString().split('T')[0];
     const endDateStr = endDate.toISOString().split('T')[0];
 
-    console.log(`📅 Date range: ${startDateStr} to ${endDateStr}`);
+    console.log(`📅 Date range: ${startDateStr} to ${endDateStr} (fetching all available dates up to today)`);
 
     // Get Google Earth Engine credentials
     let serviceAccountKey: any;
@@ -185,8 +185,9 @@ Deno.serve(async (req) => {
 
       console.log(`📊 Existing observations in DB: ${existingEntries.size}`);
 
-      // Query all optical satellites
-      console.log('🛰️  Querying all optical satellites (Sentinel-2, Landsat-8, Landsat-9)...');
+      // Query all satellites (optical + SAR)
+      console.log('🛰️  Querying all satellites (Sentinel-2, Landsat-8, Landsat-9, Sentinel-1 SAR)...');
+      console.log(`   Date range: ${startDateStr} to ${endDateStr}`);
 
       const imageList = await getAllSatelliteDates(poi, startDateStr, endDateStr, evaluate, 100);
 

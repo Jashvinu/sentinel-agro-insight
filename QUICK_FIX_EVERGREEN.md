@@ -54,3 +54,8 @@ If you can't access Supabase Dashboard, you can:
 
 **Recommended:** Use Option 1 (disable email confirmation) - it's the fastest and works for all future test accounts too!
 
+
+
+
+
+

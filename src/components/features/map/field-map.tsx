@@ -114,7 +114,6 @@ interface SavedPolygon {
 interface FieldMapProps {
   className?: string;
   height?: string;
-  farmId?: string | null;
 }
 
 const ALL_SUPPORTED_INDICES = [
@@ -135,25 +134,39 @@ const ALL_SUPPORTED_INDICES = [
 
 export const FieldMap: React.FC<FieldMapProps> = ({
   className,
-  height = "h-96",
-  farmId: propFarmId
+  height = "h-96"
 }) => {
   const [earthEngineData, setEarthEngineData] = useState<EarthEngineData | null>(null);
   const [loading, setLoading] = useState(false);
-  const [mapLoading, setMapLoading] = useState(false); // Separate state for map-specific loading (index/date changes)
+  const loadingStartTimeRef = useRef<number | null>(null);
+  const MIN_LOADING_TIME = 300; // Minimum loading time in ms for better UX
+
+  // Helper to set loading with minimum duration for better UX
+  const setLoadingWithMinDuration = useCallback((isLoading: boolean) => {
+    if (isLoading) {
+      loadingStartTimeRef.current = Date.now();
+      setLoading(true);
+    } else {
+      const elapsed = loadingStartTimeRef.current ? Date.now() - loadingStartTimeRef.current : 0;
+      const remaining = Math.max(0, MIN_LOADING_TIME - elapsed);
+      setTimeout(() => {
+        setLoading(false);
+        loadingStartTimeRef.current = null;
+      }, remaining);
+    }
+  }, []);
   const [selectedIndex, setSelectedIndex] = useState('ndvi');
   const [allowedIndices, setAllowedIndices] = useState<string[]>([...ALL_SUPPORTED_INDICES]);
   const [mapCache, setMapCache] = useState<CachedMapData>({});
   const [savedPolygons, setSavedPolygons] = useState<SavedPolygon[]>([]);
   const [selectedDate, setSelectedDate] = useState<string | undefined>(undefined);
   const [currentPolygonId, setCurrentPolygonId] = useState<string | null>(null);
-  const [selectedFarmId, setSelectedFarmId] = useState<string | null>(propFarmId || null);
+  const [selectedFarmId, setSelectedFarmId] = useState<string | null>(null);
   const [selectedSatellite, setSelectedSatellite] = useState<string>('combined');
   const [polygonSearchQuery, setPolygonSearchQuery] = useState('');
   const [showPolygonManager, setShowPolygonManager] = useState(false);
   const [editingPolygonId, setEditingPolygonId] = useState<string | null>(null);
   const [editPolygonName, setEditPolygonName] = useState('');
-  const isInitialMount = useRef(true); // Track if this is the first render
   const { toast } = useToast();
 
   // Helper function to handle index selection (cache disabled)
@@ -174,11 +187,11 @@ export const FieldMap: React.FC<FieldMapProps> = ({
     console.log(`🚫 Cache disabled - will fetch fresh from Supabase`);
     setSelectedIndex(normalizedIndex);
     setSelectedSatellite('combined');
-    setMapLoading(true); // Show map loading overlay when switching indices
+    setLoadingWithMinDuration(true);
   }, [allowedIndices, toast]);
 
-  // Leaflet base tile - Using Esri World Imagery for satellite view
-  const baseTileUrl = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
+  // Leaflet base tile
+  const baseTileUrl = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
 
   const availableLayers = useMemo(() => {
     if (!earthEngineData) return [];
@@ -235,7 +248,7 @@ export const FieldMap: React.FC<FieldMapProps> = ({
       return;
     }
 
-    setLoading(true);
+    setLoadingWithMinDuration(true);
     try {
       // Require API base URL via env to avoid mismatched origins (Firebase vs Supabase Edge Functions)
       const apiBase = API_BASE_URL;
@@ -302,10 +315,9 @@ export const FieldMap: React.FC<FieldMapProps> = ({
         variant: "destructive",
       });
     } finally {
-      setLoading(false);
-      setMapLoading(false); // Hide map loading overlay
+      setLoadingWithMinDuration(false);
     }
-  }, [selectedIndex, toast, mapCache]);
+  }, [selectedIndex, toast, mapCache, setLoadingWithMinDuration]);
 
   // Initialize and load saved polygons from database (with localStorage fallback)
   useEffect(() => {
@@ -332,7 +344,7 @@ export const FieldMap: React.FC<FieldMapProps> = ({
         }
       } catch (error) {
         console.warn('Failed to load farms from database, falling back to localStorage:', error);
-        
+
         // Fallback to localStorage
         const stored = localStorage.getItem('savedPolygons');
         if (stored) {
@@ -374,33 +386,19 @@ export const FieldMap: React.FC<FieldMapProps> = ({
 
       setSavedPolygons(polygons);
 
-      // Set selected farm: prioritize propFarmId, then "Abe's farm", then "Jash farm", then first available
-      if (propFarmId) {
-        const propFarm = polygons.find(p => p.id === propFarmId);
-        if (propFarm) {
-          setSelectedFarmId(propFarmId);
-          setCurrentPolygonId(propFarmId);
-        }
-      } else {
-        const abesFarm = polygons.find(p => p.name?.toLowerCase().includes("abe"));
-        if (abesFarm) {
-          setSelectedFarmId(abesFarm.id);
-          setCurrentPolygonId(abesFarm.id);
-        } else {
-          const jashFarm = polygons.find(p => p.name === 'Jash farm');
-          if (jashFarm) {
-            setSelectedFarmId(jashFarm.id);
-            setCurrentPolygonId(jashFarm.id);
-          } else if (polygons.length > 0) {
-            setSelectedFarmId(polygons[0].id);
-            setCurrentPolygonId(polygons[0].id);
-          }
-        }
+      // Set "Jash farm" as default selected farm, or first available
+      const jashFarm = polygons.find(p => p.name === 'Jash farm');
+      if (jashFarm) {
+        setSelectedFarmId(jashFarm.id);
+        setCurrentPolygonId(jashFarm.id);
+      } else if (polygons.length > 0) {
+        setSelectedFarmId(polygons[0].id);
+        setCurrentPolygonId(polygons[0].id);
       }
     };
 
     loadPolygons();
-  }, [propFarmId]);
+  }, []);
 
   // Initial fetch on mount - wait for savedPolygons to be loaded first
   useEffect(() => {
@@ -418,7 +416,7 @@ export const FieldMap: React.FC<FieldMapProps> = ({
 
   // Fetch indices for a polygon
   const fetchIndicesForPolygon = useCallback(async (polygonGeoJSON: any, polygonId: string) => {
-    setLoading(true);
+    setLoadingWithMinDuration(true);
     try {
       // Build API URL with date range if a specific date is selected
       let apiUrl = `${API_ENDPOINTS.agriculturalIndices}?index=${selectedIndex}&polygon=${encodeURIComponent(
@@ -445,7 +443,14 @@ export const FieldMap: React.FC<FieldMapProps> = ({
       });
 
       if (!response.ok) {
-        throw new Error(`Failed to fetch indices: ${response.statusText}`);
+        if (response.status === 404) {
+          // Date doesn't have data available
+          const errorMsg = selectedDate
+            ? `No ${selectedIndex.toUpperCase()} data available for ${selectedDate}. Please select a different date.`
+            : `No ${selectedIndex.toUpperCase()} data available for this date range.`;
+          throw new Error(errorMsg);
+        }
+        throw new Error(`Failed to fetch indices: ${response.status} ${response.statusText}`);
       }
 
       const data = await response.json();
@@ -504,24 +509,27 @@ export const FieldMap: React.FC<FieldMapProps> = ({
       });
     } catch (error) {
       console.error('Error fetching indices for polygon:', error);
-      toast({
-        title: "Error",
-        description: error instanceof Error ? error.message : "Failed to load indices for polygon.",
-        variant: "destructive",
-      });
-    } finally {
-      setLoading(false);
-      setMapLoading(false); // Hide map loading overlay
-    }
-  }, [selectedIndex, selectedDate, toast, savedPolygons]);
+      const errorMessage = error instanceof Error ? error.message : "Failed to load indices for polygon.";
 
-  // Sync propFarmId with selectedFarmId when it changes
-  useEffect(() => {
-    if (propFarmId && propFarmId !== selectedFarmId) {
-      setSelectedFarmId(propFarmId);
-      setCurrentPolygonId(propFarmId);
+      // Check if it's a 404 error (data not available for this date)
+      if (errorMessage.includes('404') || errorMessage.includes('No') || errorMessage.includes('not available')) {
+        toast({
+          title: "Data Not Available",
+          description: errorMessage.includes('No') ? errorMessage : `No ${selectedIndex.toUpperCase()} data available for ${selectedDate || 'this date'}. Please select an older date.`,
+          variant: "destructive",
+          duration: 5000,
+        });
+      } else {
+        toast({
+          title: "Error",
+          description: errorMessage,
+          variant: "destructive",
+        });
+      }
+    } finally {
+      setLoadingWithMinDuration(false);
     }
-  }, [propFarmId, selectedFarmId]);
+  }, [selectedIndex, selectedDate, toast, savedPolygons, setLoadingWithMinDuration]);
 
   // Handle farm selection - load indices for selected farm
   const handleFarmSelection = useCallback(async (farmId: string) => {
@@ -536,8 +544,7 @@ export const FieldMap: React.FC<FieldMapProps> = ({
     if (mapCache[cacheKey]) {
       setEarthEngineData(mapCache[cacheKey]);
       setSelectedSatellite('combined');
-      setLoading(false);
-      setMapLoading(false); // Hide map loading overlay when using cached data
+      setLoadingWithMinDuration(false);
       return;
     }
 
@@ -548,8 +555,7 @@ export const FieldMap: React.FC<FieldMapProps> = ({
         ...prev,
         [cacheKey]: farm.indices![selectedIndex]
       }));
-      setLoading(false);
-      setMapLoading(false); // Hide map loading overlay when using stored indices
+      setLoadingWithMinDuration(false);
       return;
     }
 
@@ -559,27 +565,12 @@ export const FieldMap: React.FC<FieldMapProps> = ({
 
   // Refresh map data when selected index or date changes
   useEffect(() => {
-    // Skip showing loading overlay on initial mount
-    if (isInitialMount.current) {
-      isInitialMount.current = false;
-      // Still fetch data, but don't show loading overlay
-      if (selectedFarmId) {
-        const farm = savedPolygons.find(p => p.id === selectedFarmId);
-        if (farm) {
-          fetchIndicesForPolygon(farm.geojson, selectedFarmId);
-        }
-      } else {
-        fetchEarthEngineData();
-      }
-      return;
-    }
-
     console.log(`🔄 Index changed to: ${selectedIndex}`);
     console.log(`📍 Selected farm ID: ${selectedFarmId}`);
     console.log(`📅 Selected date: ${selectedDate || 'latest'}`);
     console.log(`🚫 CACHE DISABLED - Always fetching fresh from Supabase`);
 
-    setMapLoading(true); // Show map loading overlay when switching indices or dates
+    setLoadingWithMinDuration(true);
 
     // If a farm is selected, fetch its indices
     if (selectedFarmId) {
@@ -763,7 +754,7 @@ export const FieldMap: React.FC<FieldMapProps> = ({
     try {
       // Delete from database
       const success = await deleteFarm(polygonId);
-      
+
       if (!success) {
         throw new Error('Failed to delete farm from database');
       }
@@ -814,7 +805,7 @@ export const FieldMap: React.FC<FieldMapProps> = ({
     try {
       // Update in database
       const updatedFarm = await updateFarmName(editingPolygonId, editPolygonName.trim());
-      
+
       if (!updatedFarm) {
         throw new Error('Failed to update farm name in database');
       }
@@ -1174,7 +1165,7 @@ export const FieldMap: React.FC<FieldMapProps> = ({
                   }}
                 >
                   <Leaf className="w-3 h-3 mr-1" />
-                  Vegetation Health
+                  NDVI
                 </Button>
                 <Button
                   variant={selectedIndex === 'evi' ? "default" : "outline"}
@@ -1188,7 +1179,7 @@ export const FieldMap: React.FC<FieldMapProps> = ({
                   }}
                 >
                   <Leaf className="w-3 h-3 mr-1" />
-                  Enhanced Vegetation
+                  EVI
                 </Button>
                 <Button
                   variant={selectedIndex === 'savi' ? "default" : "outline"}
@@ -1202,7 +1193,7 @@ export const FieldMap: React.FC<FieldMapProps> = ({
                   }}
                 >
                   <Leaf className="w-3 h-3 mr-1" />
-                  Soil Adjusted
+                  SAVI
                 </Button>
                 <Button
                   variant={selectedIndex === 'msavi' ? "default" : "outline"}
@@ -1216,7 +1207,7 @@ export const FieldMap: React.FC<FieldMapProps> = ({
                   }}
                 >
                   <Leaf className="w-3 h-3 mr-1" />
-                  Crop Health
+                  MSAVI
                 </Button>
               </div>
 
@@ -1235,7 +1226,7 @@ export const FieldMap: React.FC<FieldMapProps> = ({
                   }}
                 >
                   <Waves className="w-3 h-3 mr-1" />
-                  Water Content
+                  NDWI
                 </Button>
               </div>
             </div>
@@ -1395,7 +1386,7 @@ export const FieldMap: React.FC<FieldMapProps> = ({
             style={{ height: '100%', width: '100%' }}
             preferCanvas
           >
-            <TileLayer url={baseTileUrl} attribution="&copy; Esri, Maxar, GeoEye, Earthstar Geographics, CNES/Airbus DS, USDA, USGS, AeroGRID, IGN, and the GIS User Community" />
+            <TileLayer url={baseTileUrl} attribution="&copy; OpenStreetMap contributors" />
             {earthEngineTileUrl && (
               <TileLayer url={earthEngineTileUrl} opacity={1} zIndex={500} />
             )}
@@ -1427,28 +1418,17 @@ export const FieldMap: React.FC<FieldMapProps> = ({
             )}
             <MapEffects />
           </MapContainer>
-          {/* Loading Overlay - Only shows when switching indices or dates */}
-          {mapLoading && (
-            <div className="absolute inset-0 bg-black/40 backdrop-blur-md z-[1000] flex items-center justify-center">
-              <div className="bg-card/95 backdrop-blur-sm rounded-xl p-6 shadow-2xl border border-border/50 flex flex-col items-center space-y-4 min-w-[200px]">
-                <div className="relative">
-                  <RefreshCw className="w-8 h-8 animate-spin text-primary" />
-                  <div className="absolute inset-0 flex items-center justify-center">
-                    <Satellite className="w-4 h-4 text-primary/60" />
-                  </div>
-                </div>
-                <div className="text-center space-y-1">
-                  <p className="text-sm font-semibold text-foreground">
-                    Loading {selectedIndex.toUpperCase()} data
-                  </p>
-                  {selectedDate && (
-                    <p className="text-xs text-muted-foreground">
-                      Date: {new Date(selectedDate).toLocaleDateString()}
-                    </p>
-                  )}
-                  <p className="text-xs text-muted-foreground animate-pulse">
-                    Processing satellite imagery...
-                  </p>
+          {/* Loading Overlay */}
+          {loading && (
+            <div className="absolute inset-0 bg-black/40 backdrop-blur-sm z-[1000] flex items-center justify-center">
+              <div className="bg-card border shadow-lg rounded-lg p-6 flex flex-col items-center space-y-3 min-w-[200px]">
+                <RefreshCw className="w-6 h-6 animate-spin text-primary" />
+                <div className="text-center">
+                  <span className="text-sm font-semibold block">Loading map data...</span>
+                  <span className="text-xs text-muted-foreground mt-1">
+                    {selectedIndex.toUpperCase()}
+                    {selectedDate && ` • ${selectedDate}`}
+                  </span>
                 </div>
               </div>
             </div>

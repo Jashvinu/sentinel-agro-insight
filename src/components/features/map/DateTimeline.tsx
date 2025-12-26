@@ -5,103 +5,6 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Calendar, Cloud, Satellite } from 'lucide-react';
 import { buildApiUrl, getSupabaseFunctionHeaders } from '@/services/api';
 
-// Cache configuration
-const CACHE_PREFIX = 'datetimeline_';
-const CACHE_DURATION_MS = 30 * 60 * 1000; // 30 minutes
-
-interface CachedData {
-  data: DateObservation[];
-  timestamp: number;
-  farmId: string;
-}
-
-// Cache utilities
-function getCacheKey(farmId: string): string {
-  return `${CACHE_PREFIX}${farmId}`;
-}
-
-function getCachedData(farmId: string): DateObservation[] | null {
-  try {
-    const cacheKey = getCacheKey(farmId);
-    const cached = localStorage.getItem(cacheKey);
-
-    if (!cached) return null;
-
-    const parsed: CachedData = JSON.parse(cached);
-    const now = Date.now();
-
-    // Check if cache is expired
-    if (now - parsed.timestamp > CACHE_DURATION_MS) {
-      localStorage.removeItem(cacheKey);
-      return null;
-    }
-
-    // Verify farmId matches (in case of ID changes)
-    if (parsed.farmId !== farmId) {
-      localStorage.removeItem(cacheKey);
-      return null;
-    }
-
-    return parsed.data;
-  } catch (error) {
-    console.warn('Error reading cache:', error);
-    return null;
-  }
-}
-
-function setCachedData(farmId: string, data: DateObservation[]): void {
-  try {
-    const cacheKey = getCacheKey(farmId);
-    const cacheData: CachedData = {
-      data,
-      timestamp: Date.now(),
-      farmId,
-    };
-    localStorage.setItem(cacheKey, JSON.stringify(cacheData));
-  } catch (error) {
-    console.warn('Error writing cache:', error);
-    // If storage is full, try to clear old entries
-    try {
-      clearExpiredCache();
-      const cacheKey = getCacheKey(farmId);
-      const cacheData: CachedData = {
-        data,
-        timestamp: Date.now(),
-        farmId,
-      };
-      localStorage.setItem(cacheKey, JSON.stringify(cacheData));
-    } catch (e) {
-      console.warn('Failed to write cache after cleanup:', e);
-    }
-  }
-}
-
-function clearExpiredCache(): void {
-  try {
-    const keys = Object.keys(localStorage);
-    const now = Date.now();
-
-    keys.forEach(key => {
-      if (key.startsWith(CACHE_PREFIX)) {
-        try {
-          const cached = localStorage.getItem(key);
-          if (cached) {
-            const parsed: CachedData = JSON.parse(cached);
-            if (now - parsed.timestamp > CACHE_DURATION_MS) {
-              localStorage.removeItem(key);
-            }
-          }
-        } catch (e) {
-          // Invalid cache entry, remove it
-          localStorage.removeItem(key);
-        }
-      }
-    });
-  } catch (error) {
-    console.warn('Error clearing expired cache:', error);
-  }
-}
-
 interface SatelliteDetail {
   name: string;
   indices: string[];
@@ -122,135 +25,227 @@ interface DateTimelineProps {
   selectedDate?: string;
 }
 
-export function DateTimeline({
+// Helper functions outside component to avoid recreating on each render
+const getCacheKey = (farmId: string) => `dateTimeline_cache_${farmId}`;
+
+const loadFromCache = (farmId: string): DateObservation[] | null => {
+  try {
+    const cacheKey = getCacheKey(farmId);
+    const cached = sessionStorage.getItem(cacheKey);
+    if (cached) {
+      const { data, timestamp } = JSON.parse(cached);
+      // Check if cache is older than 2 minutes - if so, consider it stale
+      // Reduced from 5 minutes to ensure new dates appear faster
+      const cacheAge = Date.now() - (timestamp || 0);
+      const CACHE_TTL = 2 * 60 * 1000; // 2 minutes
+
+      if (cacheAge > CACHE_TTL) {
+        console.log(`[DateTimeline] Cache is stale (${Math.round(cacheAge / 1000 / 60)} minutes old), will refresh`);
+        return null; // Return null to force refresh
+      }
+
+      return data as DateObservation[];
+    }
+  } catch (err) {
+    console.warn('[DateTimeline] Failed to load from cache:', err);
+  }
+  return null;
+};
+
+const saveToCache = (farmId: string, data: DateObservation[]) => {
+  try {
+    const cacheKey = getCacheKey(farmId);
+    sessionStorage.setItem(cacheKey, JSON.stringify({
+      data,
+      timestamp: Date.now()
+    }));
+  } catch (err) {
+    console.warn('[DateTimeline] Failed to save to cache:', err);
+  }
+};
+
+function DateTimelineComponent({
   farmId = 'df43eedf-850d-454c-9fbf-36a052be10c0',
   onDateSelect,
   selectedDate
 }: DateTimelineProps) {
-  // Initialize from cache immediately to prevent flicker
-  const [observations, setObservations] = useState<DateObservation[]>(() => {
-    const cached = getCachedData(farmId);
-    return cached || [];
-  });
-  const [loading, setLoading] = useState(() => {
-    // Only show loading if we don't have cached data
-    const cached = getCachedData(farmId);
-    return !cached || cached.length === 0;
-  });
+  // Initialize with cached data if available - use lazy initialization
+  const initialCache = farmId ? loadFromCache(farmId) : null;
+  const [observations, setObservations] = useState<DateObservation[]>(initialCache || []);
+  const [loading, setLoading] = useState(!initialCache); // Only show loading if no cache
   const [error, setError] = useState<string | null>(null);
 
-  // Track which farmId we've loaded data for to prevent unnecessary refetches
-  const loadedFarmIdRef = useRef<string | null>(null);
+  // Track which farm we've loaded to avoid unnecessary fetches
+  const loadedFarmIdRef = useRef<string | null>(
+    initialCache && initialCache.length > 0 ? farmId : null
+  );
+
+  // Track if we've initialized to prevent resetting loading state
+  const initializedRef = useRef(!!initialCache);
+
+  // Ref to preserve observations even if state somehow resets
+  const observationsRef = useRef<DateObservation[]>(initialCache || []);
+
+  // Keep ref in sync with state
+  useEffect(() => {
+    if (observations.length > 0) {
+      observationsRef.current = observations;
+    }
+  }, [observations]);
+
+  // Guard: Never allow loading state to be true if we have observations
+  useEffect(() => {
+    if (observations.length > 0 && loading) {
+      console.log('[DateTimeline] Guard: Preventing loading state when observations exist');
+      setLoading(false);
+    }
+
+    // Guard: If state somehow got cleared but we have ref data, restore it
+    if (observations.length === 0 && observationsRef.current.length > 0 && loadedFarmIdRef.current === farmId) {
+      console.log('[DateTimeline] Guard: Restoring observations from ref');
+      setObservations(observationsRef.current);
+      setLoading(false);
+    }
+  }, [observations.length, loading, farmId]);
 
   useEffect(() => {
-    // If farmId changed, we need to load new data
-    const shouldFetch = loadedFarmIdRef.current !== farmId;
+    async function fetchObservations() {
+      if (!farmId) {
+        setLoading(false);
+        setError('No farm ID provided');
+        setObservations([]);
+        loadedFarmIdRef.current = null;
+        initializedRef.current = true;
+        return;
+      }
 
-    // Update cached observations immediately if available for current farmId
-    const cached = getCachedData(farmId);
-    if (cached && cached.length > 0) {
-      setObservations(cached);
-      setLoading(false);
-    } else if (shouldFetch) {
-      setLoading(true);
+      // Skip if we've already loaded this farm and have observations
+      if (loadedFarmIdRef.current === farmId && observations.length > 0) {
+        console.log('[DateTimeline] Already loaded for this farm, skipping');
+        // Ensure loading is false if we have data
+        setLoading(false);
+        initializedRef.current = true;
+        return;
+      }
+
+      // Guard: If we have observations for this farm, don't fetch again
+      if (observations.length > 0 && loadedFarmIdRef.current === farmId) {
+        console.log('[DateTimeline] Guard: Already have observations, skipping fetch');
+        setLoading(false);
+        return;
+      }
+
+      // Check cache first
+      const cachedObservations = loadFromCache(farmId);
+      if (cachedObservations && cachedObservations.length > 0) {
+        console.log('[DateTimeline] Loading from session cache');
+        observationsRef.current = cachedObservations; // Update ref immediately
+        setObservations(cachedObservations);
+        setLoading(false);
+        setError(null);
+        loadedFarmIdRef.current = farmId;
+        const wasInitialized = initializedRef.current;
+        initializedRef.current = true;
+
+        // Auto-select first date if none selected (only on initial load)
+        if (!wasInitialized && !selectedDate && cachedObservations.length > 0 && onDateSelect) {
+          onDateSelect(cachedObservations[0].observation_date, cachedObservations[0]);
+        }
+
+        // Refresh in background to get latest data (non-blocking)
+        // This will update the state automatically when new dates are found
+        fetchObservationsFromAPI(true).catch(err => {
+          console.warn('[DateTimeline] Background refresh failed:', err);
+          // Don't show error, just log it
+        });
+
+        return; // Use cached data immediately, refresh in background
+      }
+
+      // No cache, fetch from API
+      await fetchObservationsFromAPI();
     }
 
-    // If we already loaded for this farmId, don't refetch
-    if (!shouldFetch) {
-      return;
-    }
+    async function fetchObservationsFromAPI(isBackgroundRefresh: boolean = false) {
+      // Guard: Don't fetch if we already have observations for this farm (unless it's a background refresh)
+      if (!isBackgroundRefresh && observations.length > 0 && loadedFarmIdRef.current === farmId) {
+        console.log('[DateTimeline] Guard: Skipping API fetch, already have observations');
+        setLoading(false);
+        return;
+      }
 
-    let isMounted = true;
-
-    async function fetchAndCacheObservations() {
       try {
-        // Only set loading if we don't have cached data
-        const hasCached = getCachedData(farmId);
-        if (!hasCached || hasCached.length === 0) {
+        // Only show loading if we don't already have observations
+        if (!isBackgroundRefresh && observations.length === 0) {
           setLoading(true);
         }
         setError(null);
 
-        // Use default farm ID if none provided or invalid
-        const effectiveFarmId = farmId || 'df43eedf-850d-454c-9fbf-36a052be10c0';
-        
-        const endpoint = buildApiUrl(`get-observation-dates?farm_id=${effectiveFarmId}`);
+        // Use get-observation-dates endpoint which queries database directly (faster, more reliable)
+        // Add force_refresh parameter for background refreshes to ensure we get latest data
+        const endpoint = buildApiUrl(`get-observation-dates?farm_id=${farmId}${isBackgroundRefresh ? '&force_refresh=true' : ''}`);
         const headers = getSupabaseFunctionHeaders();
-        
-        console.log('DateTimeline: Fetching observations for farm:', effectiveFarmId);
-        
-        const response = await fetch(endpoint, {
-          headers: Object.keys(headers).length > 0 ? headers : undefined
-        });
+
+        console.log('[DateTimeline] Fetching observations from:', endpoint);
+
+        let response: Response;
+        try {
+          response = await fetch(endpoint, {
+            headers: Object.keys(headers).length > 0 ? headers : undefined
+          });
+        } catch (networkError: any) {
+          // Handle network errors (CORS, connection refused, etc.)
+          throw new Error(`Network error: ${networkError.message || 'Failed to connect to server'}`);
+        }
 
         if (!response.ok) {
-          throw new Error(`Failed to fetch observations: ${response.statusText}`);
+          let errorMessage = `Failed to fetch observations: ${response.status} ${response.statusText || 'Unknown error'}`;
+          try {
+            const errorData = await response.json();
+            if (errorData.message) {
+              errorMessage = errorData.message;
+            } else if (errorData.error) {
+              errorMessage = errorData.error;
+            }
+          } catch (e) {
+            // If response is not JSON, try to get text
+            try {
+              const text = await response.text();
+              if (text) {
+                errorMessage += ` - ${text.substring(0, 100)}`;
+              }
+            } catch (textError) {
+              // Ignore text parsing errors
+            }
+          }
+          throw new Error(errorMessage);
         }
 
         const data = await response.json();
 
-        // Handle response wrapper - get-observation-dates returns { success: true, dates: [...] }
-        // Also support get-available-dates format { available_dates: [...] }
-        const availableDates = Array.isArray(data.dates)
-          ? data.dates
-          : (Array.isArray(data.available_dates) ? data.available_dates : []);
+        // get-observation-dates returns { success: true, dates: [...], total_dates: N } format
+        // The successResponse spreads data directly, so dates is at the top level
+        const datesArray = Array.isArray(data.dates) ? data.dates : [];
 
-        // Debug logging
-        console.log('DateTimeline: Response data', {
-          farmId: effectiveFarmId,
-          success: data.success,
-          hasDates: Array.isArray(data.dates),
-          datesLength: data.dates?.length,
-          totalDates: data.total_dates,
-          hasAvailableDates: Array.isArray(data.available_dates),
-          availableDatesLength: data.available_dates?.length,
-          dataKeys: Object.keys(data),
-          firstDateItem: data.dates?.[0],
-          availableDatesLength: availableDates.length
-        });
-
-        if (availableDates.length === 0) {
-          console.warn('DateTimeline: No dates found in response', {
-            farmId: effectiveFarmId,
-            hasDates: Array.isArray(data.dates),
-            datesLength: data.dates?.length,
-            totalDates: data.total_dates,
-            hasAvailableDates: Array.isArray(data.available_dates),
-            availableDatesLength: data.available_dates?.length,
-            dataKeys: Object.keys(data),
-            responseStatus: data.success
-          });
-          
-          // If the response is successful but empty, it means this farm has no observations
-          // This is not an error, just no data available
-          if (data.success && data.total_dates === 0) {
-            console.info(`DateTimeline: Farm ${effectiveFarmId} has no observations. Consider running satellite sync.`);
-          }
-        }
-
-        const obs: DateObservation[] = availableDates
+        const obs: DateObservation[] = datesArray
           .map((item: any) => {
             const primarySatellite = typeof item.satellite === 'string' && item.satellite.length > 0
               ? item.satellite
               : 'Unknown';
 
-            // Handle both cloud_cover (from get-available-dates) and cloud_cover_percentage (from get-observation-dates)
-            const cloudCover = typeof item.cloud_cover === 'number'
-              ? Math.round(item.cloud_cover * 10) / 10
-              : (typeof item.cloud_cover_percentage === 'number'
-                ? Math.round(item.cloud_cover_percentage * 10) / 10
-                : null);
+            const cloudCover = typeof item.cloud_cover_percentage === 'number'
+              ? Math.round(item.cloud_cover_percentage * 10) / 10
+              : null;
 
-            // get-observation-dates uses 'observation_date', get-available-dates uses 'date'
             const observationDate = typeof item.observation_date === 'string'
               ? item.observation_date
-              : (typeof item.date === 'string' ? item.date : null);
+              : null;
 
             if (!observationDate) {
-              console.warn('DateTimeline: Missing observation date in item', item);
               return null;
             }
 
+            // Use satellite_details if available, otherwise construct from satellite and indices
             const satelliteDetails: SatelliteDetail[] = Array.isArray(item.satellite_details)
               ? item.satellite_details
                 .filter((detail: any) => detail && typeof detail.name === 'string')
@@ -264,16 +259,12 @@ export function DateTimeline({
                 }))
               : [{
                 name: primarySatellite,
-                indices: Array.isArray(item.available_indices)
-                  ? item.available_indices
-                    .filter((idx: any) => typeof idx === 'string')
-                    .map((idx: string) => idx.toLowerCase())
-                  : []
+                indices: [] // Will be populated if available_indices exists
               }];
 
-            const satellites = satelliteDetails
-              .map((detail) => detail.name)
-              .filter((name) => typeof name === 'string' && name.length > 0);
+            const satellites = Array.isArray(item.satellites)
+              ? item.satellites.filter((name: any) => typeof name === 'string' && name.length > 0)
+              : [primarySatellite];
 
             return {
               observation_date: observationDate,
@@ -289,72 +280,71 @@ export function DateTimeline({
           .filter((item): item is DateObservation => item !== null)
           .sort((a, b) => new Date(b.observation_date).getTime() - new Date(a.observation_date).getTime());
 
-        // Cache the data
-        setCachedData(farmId, obs);
+        // Save to cache
+        saveToCache(farmId, obs);
 
-        // Update state only if component is still mounted
-        if (isMounted) {
-          setObservations(obs);
-          loadedFarmIdRef.current = farmId; // Mark as loaded
+        // Update ref and state
+        observationsRef.current = obs; // Update ref immediately
 
-          if (!selectedDate && obs.length > 0 && onDateSelect) {
-            onDateSelect(obs[0].observation_date, obs[0]);
+        // Always update state with latest data (even on background refresh)
+        // This ensures new dates appear automatically
+        const hadObservations = observations.length > 0;
+        const previousDates = hadObservations ? new Set(observations.map(o => o.observation_date)) : new Set();
+        const newDates = obs.filter(o => !previousDates.has(o.observation_date));
+
+        // Always update state - this ensures new dates appear even if total count is same
+        setObservations(obs);
+        loadedFarmIdRef.current = farmId;
+        initializedRef.current = true;
+
+        // Log if background refresh found new dates or updated existing ones
+        if (isBackgroundRefresh) {
+          if (newDates.length > 0) {
+            console.log(`[DateTimeline] ✨ Background refresh found ${newDates.length} new date(s):`, newDates.map(d => d.observation_date));
+          } else if (obs.length > observations.length) {
+            console.log(`[DateTimeline] 📈 Background refresh: Updated from ${observations.length} to ${obs.length} dates`);
+          } else if (obs.length !== observations.length || JSON.stringify(obs) !== JSON.stringify(observations)) {
+            console.log(`[DateTimeline] 🔄 Background refresh: Updated date list (${obs.length} dates)`);
           }
+        }
+
+        // Only auto-select on initial load, not on background refresh
+        if (!isBackgroundRefresh && !selectedDate && obs.length > 0 && onDateSelect) {
+          onDateSelect(obs[0].observation_date, obs[0]);
         }
       } catch (err: any) {
         console.error('Error fetching observations:', err);
-        if (isMounted) {
-          setError(err.message || 'Failed to load observations');
-        }
-      } finally {
-        if (isMounted) {
-          setLoading(false);
-        }
-      }
-    }
+        const errorMessage = err.message || err.toString() || 'Failed to load observations';
 
-    async function fetchObservations() {
-      try {
-        // Check cache first
-        const cachedData = getCachedData(farmId);
-        if (cachedData && cachedData.length > 0) {
-          // Update state with cached data
-          if (isMounted) {
+        // Only show error if not a background refresh
+        if (!isBackgroundRefresh) {
+          setError(errorMessage);
+        }
+
+        // Never clear observations on error - keep existing data
+        // Only clear if we truly have no data and no cache
+        if (observations.length === 0) {
+          const cachedData = loadFromCache(farmId);
+          if (!cachedData || cachedData.length === 0) {
+            setObservations([]);
+            loadedFarmIdRef.current = null;
+          } else {
+            // Restore from cache on error
             setObservations(cachedData);
-            setLoading(false);
-            loadedFarmIdRef.current = farmId; // Mark as loaded
-
-            // Auto-select first date if not already selected
-            if (!selectedDate && cachedData.length > 0 && onDateSelect) {
-              onDateSelect(cachedData[0].observation_date, cachedData[0]);
-            }
+            loadedFarmIdRef.current = farmId;
           }
-
-          // Fetch in background to refresh cache (non-blocking)
-          fetchAndCacheObservations();
-          return;
         }
-
-        // No cache, fetch data
-        await fetchAndCacheObservations();
-      } catch (err: any) {
-        console.error('Error fetching observations:', err);
-        if (isMounted) {
-          setError(err.message || 'Failed to load observations');
+        initializedRef.current = true;
+      } finally {
+        if (!isBackgroundRefresh) {
           setLoading(false);
         }
       }
     }
-
-    // Clear expired cache entries on mount
-    clearExpiredCache();
 
     fetchObservations();
-
-    return () => {
-      isMounted = false;
-    };
-  }, [farmId, onDateSelect]); // Only depend on farmId, not selectedDate
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [farmId]); // Only re-fetch when farmId changes, not when onDateSelect or selectedDate change
 
   const formatDate = (dateStr: string) => {
     const date = new Date(dateStr);
@@ -378,27 +368,30 @@ export function DateTimeline({
   };
 
   const handleDateClick = (date: string) => {
-    if (onDateSelect) {
-      const observation = observations.find((obs) => obs.observation_date === date);
-      if (observation) {
-        onDateSelect(date, observation);
-      } else {
-        // Fallback: construct a minimal observation if not found
-        onDateSelect(date, {
-          observation_date: date,
-          cloud_cover_percentage: null,
-          tile_id: date,
-          satellite: 'Unknown',
-          satellites: ['Unknown'],
-          satelliteDetails: []
-        });
-      }
+    if (!onDateSelect) return;
+
+    // Use current observations or fallback to ref
+    const currentObs = observations.length > 0 ? observations : observationsRef.current;
+    const observation = currentObs.find((obs) => obs.observation_date === date);
+
+    if (observation) {
+      // Valid date with observation data
+      onDateSelect(date, observation);
+    } else {
+      // Date not found in observations - don't allow selection
+      console.warn(`[DateTimeline] Date ${date} not found in observations. Available dates:`,
+        currentObs.map(o => o.observation_date).slice(0, 5));
+      // Don't call onDateSelect for invalid dates
+      return;
     }
   };
 
+  // Use observations from state, fallback to ref if state is empty
+  const displayObservations = observations.length > 0 ? observations : observationsRef.current;
+
   const uniqueSatellites = Array.from(
     new Set(
-      observations.flatMap((obs) =>
+      displayObservations.flatMap((obs) =>
         (obs.satelliteDetails && obs.satelliteDetails.length > 0)
           ? obs.satelliteDetails.map(detail => detail.name)
           : (obs.satellites && obs.satellites.length > 0
@@ -435,7 +428,7 @@ export function DateTimeline({
     );
   }
 
-  if (observations.length === 0) {
+  if (displayObservations.length === 0) {
     return (
       <Card className="p-4">
         <div className="text-gray-500 text-center py-8">
@@ -455,7 +448,7 @@ export function DateTimeline({
           <Calendar className="w-5 h-5 text-primary" />
           <h3 className="text-lg font-semibold">Available Satellite Observations</h3>
           <Badge variant="outline" className="ml-2">
-            {observations.length} dates
+            {displayObservations.length} dates
           </Badge>
         </div>
         <div className="flex items-center gap-2 text-sm text-gray-600 flex-wrap justify-end">
@@ -470,7 +463,7 @@ export function DateTimeline({
 
       {/* Scrollable Date Tiles */}
       <div className="flex gap-3 overflow-x-auto pb-4 snap-x snap-mandatory">
-        {observations.map((obs) => {
+        {displayObservations.map((obs) => {
           const dateInfo = formatDate(obs.observation_date);
           const isSelected = selectedDate === obs.observation_date;
           const observationKey = `${obs.observation_date}-${obs.tile_id}-${obs.satellite}`;
@@ -562,4 +555,20 @@ export function DateTimeline({
     </div>
   );
 }
+
+// Memoize component to prevent unnecessary re-renders when only selectedDate changes
+export const DateTimeline = React.memo(DateTimelineComponent, (prevProps, nextProps) => {
+  // Only re-render if farmId changes (which requires new data fetch)
+  // Ignore changes to selectedDate and onDateSelect to prevent flickering
+  // Return true if props are equal (skip re-render), false if different (re-render)
+  const farmIdChanged = prevProps.farmId !== nextProps.farmId;
+
+  if (farmIdChanged) {
+    console.log('[DateTimeline] farmId changed, allowing re-render');
+    return false; // Re-render needed
+  }
+
+  // FarmId is the same, skip re-render even if selectedDate or onDateSelect changed
+  return true; // Skip re-render
+});
 

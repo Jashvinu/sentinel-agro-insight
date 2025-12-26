@@ -4,7 +4,7 @@
 import { handleCors } from '../_shared/cors.ts';
 import { successResponse, errorResponse } from '../_shared/response.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3';
-import { getAllSatelliteDates, geoJsonToEarthEngine } from '../_shared/satellite-utils.ts';
+import { getAllSatelliteDates, getIndicesForSatellite, geoJsonToEarthEngine } from '../_shared/satellite-utils.ts';
 
 // @deno-types="npm:@types/google__earthengine"
 import ee from 'npm:@google/earthengine@1.6.13';
@@ -57,7 +57,12 @@ Deno.serve(async (req) => {
     const endDateParam = url.searchParams.get('end');
     const startDateParam = url.searchParams.get('start');
 
+    // Calculate date range with 5-day processing buffer
+    // Earth Engine typically needs 5-7 days to process satellite imagery
     const endDateObj = endDateParam ? new Date(endDateParam) : new Date();
+    if (!endDateParam) {
+      endDateObj.setDate(endDateObj.getDate() - 5); // Exclude last 5 days
+    }
     const startDateObj = startDateParam ? new Date(startDateParam) : new Date(endDateObj);
     if (!startDateParam) {
       startDateObj.setMonth(startDateObj.getMonth() - monthsParam);
@@ -175,34 +180,47 @@ Deno.serve(async (req) => {
       };
     }
 
+    // Validate Earth Engine credentials
     if (!serviceAccountKey.project_id || !serviceAccountKey.private_key || !serviceAccountKey.client_email) {
-      throw new Error("Missing required Google Cloud credentials");
+      throw new Error("Missing required Google Cloud credentials. Please configure GOOGLE_CREDENTIALS_JSON or individual credential environment variables.");
     }
 
     // Authenticate Earth Engine
     await authenticate(serviceAccountKey);
-    console.log('Earth Engine authenticated successfully');
+    console.log('✅ Earth Engine authenticated successfully');
 
     // Create Earth Engine geometry (handles both Polygon and MultiPolygon)
+    console.log('📍 Creating Earth Engine geometry from farm polygon...');
     const poi = geoJsonToEarthEngine(polygonGeometry);
+    console.log(`✅ Geometry created: ${polygonGeometry.type}`);
 
-    // Get all satellite dates (optical + SAR)
-    console.log('🛰️  Querying all satellites (Sentinel-2, Landsat 8/9, Sentinel-1 SAR)...');
-    const availableDates = await getAllSatelliteDates(poi, startDate, endDate, evaluate, Math.min(Math.max(maxCloudCover, 0), 100));
+    // Query all satellites from Earth Engine
+    // Each satellite (Sentinel-2, Landsat-8, Landsat-9, Sentinel-1 SAR) has different:
+    // - Collections in Earth Engine
+    // - Cloud cover properties
+    // - Tile IDs
+    // - Available indices
+    console.log('🛰️  Querying Earth Engine for all satellites...');
+    console.log(`   - Sentinel-2: Optical, cloud property: CLOUDY_PIXEL_PERCENTAGE`);
+    console.log(`   - Landsat-8: Optical, cloud property: CLOUD_COVER`);
+    console.log(`   - Landsat-9: Optical, cloud property: CLOUD_COVER`);
+    console.log(`   - Sentinel-1 SAR: Radar, no cloud cover`);
+    console.log(`   - Date range: ${startDate} to ${endDate}`);
+    console.log(`   - Max cloud cover: ${maxCloudCover}%`);
 
-    console.log(`Found ${availableDates.length} images across all satellites`);
+    const availableDates = await getAllSatelliteDates(
+      poi,
+      startDate,
+      endDate,
+      evaluate,
+      Math.min(Math.max(maxCloudCover, 0), 100)
+    );
 
-    // Group by satellite for summary
-    const satelliteCounts = availableDates.reduce((acc: any, date: any) => {
-      acc[date.satellite] = (acc[date.satellite] || 0) + 1;
-      return acc;
-    }, {});
+    console.log(`✅ Found ${availableDates.length} images across all satellites`);
 
-    console.log('Satellite breakdown:', satelliteCounts);
-
-    // If farm_id provided, save to database
-    if (farmId) {
-      console.log(`Saving ${availableDates.length} observations to database for farm ${farmId}`);
+    // If farm_id provided, save to database for future caching
+    if (farmId && availableDates.length > 0) {
+      console.log(`💾 Saving ${availableDates.length} observations to database for farm ${farmId}...`);
 
       // Insert observations (upsert to avoid duplicates)
       const observations = availableDates.map(obs => ({
@@ -210,7 +228,7 @@ Deno.serve(async (req) => {
         observation_date: obs.date,
         cloud_cover_percentage: typeof obs.cloud_cover === 'number' ? obs.cloud_cover : null,
         satellite: obs.satellite,
-        processing_level: obs.satellite === 'Sentinel-2' ? 'L2A' : 'L2',
+        processing_level: obs.satellite === 'Sentinel-2' ? 'L2A' : (obs.satellite === 'Sentinel-1 SAR' ? null : 'L2'),
         tile_id: obs.tile_id || `${obs.satellite}_${obs.date}`
       }));
 
@@ -222,20 +240,36 @@ Deno.serve(async (req) => {
         });
 
       if (insertError) {
-        console.error('Error saving observations:', insertError);
+        console.error('⚠️  Error saving observations (continuing anyway):', insertError.message);
+        console.error('   Details:', insertError.details);
       } else {
-        console.log(`✅ Saved ${observations.length} observations`);
+        console.log(`✅ Saved ${observations.length} observations to database`);
       }
     }
 
-    // Return the available dates
+    // Ensure each date has available_indices populated
+    // Different satellites support different indices:
+    // - Sentinel-2, Landsat-8, Landsat-9: ndvi, evi, savi, msavi, ndwi, nitrogen, phosphorus, potassium, salinity, ph, moisture, carbon
+    // - Sentinel-1 SAR: sar_moisture only
+    const datesWithIndices = availableDates.map(date => ({
+      ...date,
+      available_indices: date.available_indices || getIndicesForSatellite(date.satellite)
+    }));
+
+    // Group by satellite for summary
+    const satelliteCounts = datesWithIndices.reduce((acc: any, date: any) => {
+      acc[date.satellite] = (acc[date.satellite] || 0) + 1;
+      return acc;
+    }, {});
+
     return successResponse({
       farm_id: farmId,
       date_range: { start: startDate, end: endDate },
-      total_images: availableDates.length,
-      available_dates: availableDates,
+      total_images: datesWithIndices.length,
+      available_dates: datesWithIndices,
       satellite_breakdown: satelliteCounts,
-      data_sources: "Multi-satellite (Sentinel-2, Landsat-8, Landsat-9, Sentinel-1 SAR)"
+      data_sources: "Multi-satellite (Sentinel-2, Landsat-8, Landsat-9, Sentinel-1 SAR)",
+      note: "Each satellite has different available indices. Use the agricultural-indices endpoint with specific date, index, and satellite to get map tiles."
     });
 
   } catch (error: any) {

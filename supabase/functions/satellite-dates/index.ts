@@ -1,9 +1,16 @@
-// Get Observation Dates - Simple endpoint to fetch available satellite dates
-// Automatically refreshes from Earth Engine if dates are stale
+// Satellite Dates API - Get dates for a specific satellite
+// Supports: Sentinel-2, Landsat-8, Landsat-9, Sentinel-1 SAR
+
 import { handleCors } from '../_shared/cors.ts';
 import { successResponse, errorResponse } from '../_shared/response.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3';
-import { getIndicesForSatellite, getAllSatelliteDates, geoJsonToEarthEngine } from '../_shared/satellite-utils.ts';
+import { 
+  SATELLITES, 
+  getIndicesForSatellite, 
+  geoJsonToEarthEngine,
+  getAllOpticalDates,
+  getSentinel1Dates
+} from '../_shared/satellite-utils.ts';
 
 // @deno-types="npm:@types/google__earthengine"
 import ee from 'npm:@google/earthengine@1.6.13';
@@ -34,6 +41,8 @@ function evaluate(obj: any): Promise<any> {
   );
 }
 
+const VALID_SATELLITES = ['Sentinel-2', 'Landsat-8', 'Landsat-9', 'Sentinel-1 SAR'];
+
 Deno.serve(async (req) => {
   // Handle CORS preflight
   const corsResponse = handleCors(req);
@@ -45,36 +54,38 @@ Deno.serve(async (req) => {
 
   try {
     const url = new URL(req.url);
-    let farmId = url.searchParams.get('farm_id') || 'df43eedf-850d-454c-9fbf-36a052be10c0';
+    const satelliteParam = url.searchParams.get('satellite');
+    const farmId = url.searchParams.get('farm_id');
+    const monthsParam = parseInt(url.searchParams.get('months') || '6');
+    const endDateParam = url.searchParams.get('end');
+    const startDateParam = url.searchParams.get('start');
+    const forceRefresh = url.searchParams.get('force_refresh') === 'true';
 
-    // Validate UUID format
-    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-    if (!uuidRegex.test(farmId)) {
-      console.log(`Invalid UUID format: ${farmId}, using default`);
-      farmId = 'df43eedf-850d-454c-9fbf-36a052be10c0';
+    // Validate satellite parameter
+    if (!satelliteParam || !VALID_SATELLITES.includes(satelliteParam)) {
+      return errorResponse(
+        `Invalid or missing satellite parameter. Valid options: ${VALID_SATELLITES.join(', ')}`,
+        400
+      );
     }
 
-    console.log(`Fetching observation dates for farm: ${farmId}`);
+    const satellite = satelliteParam as typeof VALID_SATELLITES[number];
+    console.log(`🛰️  Fetching dates for satellite: ${satellite}`);
 
     // Initialize Supabase client
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
     const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
     const supabase = createClient(supabaseUrl, supabaseKey);
 
-    // Get unique observation dates with cloud cover info
-    // Support custom date range via query parameters, default to last 6 months
-    const monthsParam = parseInt(url.searchParams.get('months') || '6');
-    const endDateParam = url.searchParams.get('end');
-    const startDateParam = url.searchParams.get('start');
-
-    // Calculate date range - show all available dates up to today
+    // Calculate date range with 5-day processing buffer
     const today = new Date();
-    const todayStr = today.toISOString().split('T')[0];
+    const maxAllowedDate = new Date();
+    maxAllowedDate.setDate(maxAllowedDate.getDate() - 5);
+    const maxAllowedDateStr = maxAllowedDate.toISOString().split('T')[0];
 
-    const endDateObj = endDateParam ? new Date(endDateParam) : new Date(today);
-    // Don't allow end date to be in the future
-    if (endDateObj > today) {
-      endDateObj.setTime(today.getTime());
+    const endDateObj = endDateParam ? new Date(endDateParam) : new Date(maxAllowedDate);
+    if (endDateObj > maxAllowedDate) {
+      endDateObj.setTime(maxAllowedDate.getTime());
     }
 
     const startDateObj = startDateParam ? new Date(startDateParam) : new Date(endDateObj);
@@ -85,44 +96,37 @@ Deno.serve(async (req) => {
     const minDateStr = startDateObj.toISOString().split('T')[0];
     const maxDateStr = endDateObj.toISOString().split('T')[0];
 
-    console.log(`📅 Date range: ${minDateStr} to ${maxDateStr} (${monthsParam} months)`);
-    console.log(`📅 Today's date: ${todayStr}`);
+    console.log(`📅 Date range: ${minDateStr} to ${maxDateStr} (max allowed: ${maxAllowedDateStr})`);
 
     // Check if we should refresh from Earth Engine
-    // Refresh if latest date is more than 1 day behind the max available date (more aggressive refresh)
-    const forceRefresh = url.searchParams.get('force_refresh') === 'true';
-    let shouldRefresh = false;
-
-    if (forceRefresh) {
-      console.log('🔄 Force refresh requested. Querying Earth Engine...');
-      shouldRefresh = true;
-    } else {
+    let shouldRefresh = forceRefresh;
+    
+    if (!shouldRefresh && farmId) {
       const { data: latestObs } = await supabase
         .from('satellite_observations')
         .select('observation_date')
         .eq('farm_id', farmId)
+        .eq('satellite', satellite)
         .order('observation_date', { ascending: false })
         .limit(1)
         .maybeSingle();
 
-      if (latestObs && latestObs.observation_date) {
+      if (!latestObs || !latestObs.observation_date) {
+        shouldRefresh = true;
+        console.log('🔄 No dates in database for this satellite. Querying Earth Engine...');
+      } else {
         const latestDate = new Date(latestObs.observation_date);
-        const daysDiff = Math.floor((today.getTime() - latestDate.getTime()) / (1000 * 60 * 60 * 24));
-        if (daysDiff > 1) {  // Refresh if latest date is more than 1 day behind today
-          console.log(`🔄 Database dates are stale (latest: ${latestObs.observation_date}, today: ${todayStr}, diff: ${daysDiff} days). Refreshing from Earth Engine...`);
+        const daysDiff = Math.floor((maxAllowedDate.getTime() - latestDate.getTime()) / (1000 * 60 * 60 * 24));
+        if (daysDiff > 1) {
+          console.log(`🔄 Database dates are stale (latest: ${latestObs.observation_date}, max available: ${maxAllowedDateStr}, diff: ${daysDiff} days). Refreshing...`);
           shouldRefresh = true;
         }
-      } else {
-        // No dates in database, definitely refresh
-        console.log('🔄 No dates in database. Querying Earth Engine...');
-        shouldRefresh = true;
       }
     }
 
-    // If refresh is needed, query Earth Engine and update database
-    if (shouldRefresh) {
+    // If refresh is needed and farm_id provided, query Earth Engine
+    if (shouldRefresh && farmId) {
       try {
-        // Get farm geometry
         const { data: farm, error: farmError } = await supabase
           .from('farms')
           .select('id, geometry')
@@ -159,26 +163,33 @@ Deno.serve(async (req) => {
           }
 
           if (serviceAccountKey.project_id && serviceAccountKey.private_key && serviceAccountKey.client_email) {
-            // Authenticate and query Earth Engine
-            console.log('🔐 Authenticating with Earth Engine...');
             await authenticate(serviceAccountKey);
-            console.log('✅ Earth Engine authenticated');
-
             const poi = geoJsonToEarthEngine(farm.geometry);
-            console.log(`📍 Querying Earth Engine for dates: ${minDateStr} to ${maxDateStr}`);
 
-            const availableDates = await getAllSatelliteDates(poi, minDateStr, maxDateStr, evaluate, 100);
+            let availableDates: Array<{
+              date: string;
+              timestamp: number;
+              cloud_cover: number | null;
+              satellite: string;
+              tile_id?: string;
+              available_indices: string[];
+            }> = [];
 
-            console.log(`📊 Earth Engine returned ${availableDates.length} observations`);
+            if (satellite === 'Sentinel-1 SAR') {
+              availableDates = await getSentinel1Dates(poi, minDateStr, maxDateStr, evaluate);
+            } else {
+              // For optical satellites, filter to specific satellite
+              const allOpticalDates = await getAllOpticalDates(poi, minDateStr, maxDateStr, evaluate, 100);
+              availableDates = allOpticalDates.filter(d => d.satellite === satellite);
+            }
 
             if (availableDates.length > 0) {
-              // Save to database
               const observations = availableDates.map(obs => ({
                 farm_id: farmId,
                 observation_date: obs.date,
                 cloud_cover_percentage: typeof obs.cloud_cover === 'number' ? obs.cloud_cover : null,
                 satellite: obs.satellite,
-                processing_level: obs.satellite === 'Sentinel-2' ? 'L2A' : (obs.satellite === 'Sentinel-1 SAR' ? 'GRD' : 'L2'),
+                processing_level: satellite === 'Sentinel-2' ? 'L2A' : (satellite === 'Sentinel-1 SAR' ? 'GRD' : 'L2'),
                 tile_id: obs.tile_id || `${obs.satellite}_${obs.date}`
               }));
 
@@ -192,136 +203,91 @@ Deno.serve(async (req) => {
               if (upsertError) {
                 console.error('❌ Error upserting observations:', upsertError.message);
               } else {
-                console.log(`✅ Refreshed ${observations.length} observations from Earth Engine`);
+                console.log(`✅ Refreshed ${observations.length} observations for ${satellite} from Earth Engine`);
               }
-            } else {
-              console.warn('⚠️  No observations found from Earth Engine');
             }
-          } else {
-            console.warn('⚠️  Earth Engine credentials not available, skipping refresh');
           }
         }
       } catch (refreshError) {
-        // Don't fail the request if refresh fails, just log and continue with database data
         console.warn('⚠️  Error refreshing from Earth Engine, using database data:', refreshError);
       }
     }
 
-    // Query all observations in the date range, then filter to max allowed date
-    // This ensures we get the latest available dates
-    const { data: observations, error: obsError } = await supabase
+    // Query database for this specific satellite
+    let query = supabase
       .from('satellite_observations')
-      .select('observation_date, cloud_cover_percentage, tile_id, satellite')
-      .eq('farm_id', farmId)
+      .select('observation_date, cloud_cover_percentage, tile_id, satellite, farm_id')
+      .eq('satellite', satellite)
+      .lte('observation_date', maxAllowedDateStr)
       .gte('observation_date', minDateStr)
-      .lte('observation_date', maxDateStr)
       .order('observation_date', { ascending: false });
+
+    if (farmId) {
+      query = query.eq('farm_id', farmId);
+    }
+
+    const { data: observations, error: obsError } = await query;
 
     if (obsError) {
       throw new Error(`Database error: ${obsError.message}`);
     }
 
-    // Group by date and aggregate tiles
+    // Filter and group dates
     const dateMap = new Map<string, {
       observation_date: string;
       cloud_cover_percentage: number | null;
       tiles: Set<string>;
-      satellites: Set<string>;
     }>();
 
-    // Filter out only future dates (dates after today)
-    let filteredCount = 0;
-
-    (observations || []).forEach(obs => {
+    (observations || []).forEach((obs: any) => {
       const date = obs.observation_date;
-
-      // Skip only future dates (dates after today)
-      if (date > todayStr) {
-        filteredCount++;
-        return;
-      }
+      if (date > maxAllowedDateStr) return;
 
       if (!dateMap.has(date)) {
         dateMap.set(date, {
           observation_date: date,
           cloud_cover_percentage: obs.cloud_cover_percentage ?? null,
-          tiles: new Set<string>(),
-          satellites: new Set<string>()
+          tiles: new Set<string>()
         });
       }
 
       const entry = dateMap.get(date)!;
-
       if (typeof obs.cloud_cover_percentage === 'number' && entry.cloud_cover_percentage === null) {
         entry.cloud_cover_percentage = obs.cloud_cover_percentage;
       }
-
       if (obs.tile_id) {
         entry.tiles.add(obs.tile_id);
       }
-
-      if (obs.satellite) {
-        entry.satellites.add(obs.satellite);
-      }
     });
 
-    const uniqueDates = Array.from(dateMap.values()).map(item => {
-      const satellites = Array.from(item.satellites);
-      const satelliteDetails = satellites.map((sat) => ({
-        name: sat,
-        indices: getIndicesForSatellite(sat)
-      }));
-      return {
+    const uniqueDates = Array.from(dateMap.values())
+      .map(item => ({
         observation_date: item.observation_date,
         cloud_cover_percentage: item.cloud_cover_percentage,
         tile_id: Array.from(item.tiles).join(', ') || 'Multiple tiles',
-        satellites,
-        satellite_details: satelliteDetails,
-        satellite: satellites[0] || 'Unknown'
-      };
-    });
+        satellite: satellite,
+        available_indices: getIndicesForSatellite(satellite)
+      }))
+      .sort((a, b) => new Date(b.observation_date).getTime() - new Date(a.observation_date).getTime());
 
-    // Sort by date descending (most recent first)
-    uniqueDates.sort((a, b) => {
-      const dateA = new Date(a.observation_date).getTime();
-      const dateB = new Date(b.observation_date).getTime();
-      return dateB - dateA;
-    });
-
-    const totalObservations = (observations || []).length;
-    const uniqueDateCount = uniqueDates.length;
-    const satellitesRepresented = Array.from(new Set(uniqueDates.flatMap(d => d.satellites)));
-
-    console.log(`✅ Found ${uniqueDateCount} unique observation dates from ${totalObservations} total observations`);
-    if (filteredCount > 0) {
-      console.log(`⏭️  Filtered out ${filteredCount} future observations (dates after ${todayStr})`);
-    }
-    console.log(`📊 Satellites represented: ${satellitesRepresented.join(', ')}`);
-    console.log(`📅 Today's date: ${todayStr}`);
+    console.log(`✅ Found ${uniqueDates.length} dates for ${satellite}`);
 
     return successResponse({
-      farm_id: farmId,
-      total_dates: uniqueDateCount,
-      total_observations: totalObservations, // Total individual satellite observations
+      satellite: satellite,
+      farm_id: farmId || null,
+      total_dates: uniqueDates.length,
       dates: uniqueDates,
       date_list: uniqueDates.map(d => d.observation_date),
+      available_indices: getIndicesForSatellite(satellite),
       date_range: {
         start: minDateStr,
-        end: maxDateStr, // Latest date in requested range
-        today: todayStr // Today's date
-      },
-      metadata: {
-        satellites: satellitesRepresented,
-        note: uniqueDateCount < totalObservations
-          ? `${totalObservations} observations grouped into ${uniqueDateCount} unique dates (multiple satellites per date). Only future dates are filtered out.`
-          : 'One observation per date. Only future dates are filtered out.',
-        max_available_date: maxDateStr,
-        filter_applied: false // No 5-day buffer filter applied
+        end: maxAllowedDateStr,
+        max_allowed: maxAllowedDateStr
       }
     });
 
   } catch (error: any) {
-    console.error("Get Observation Dates Error:", error);
+    console.error("Satellite Dates Error:", error);
     return errorResponse(error.message || "Unknown error", 500, error);
   }
 });

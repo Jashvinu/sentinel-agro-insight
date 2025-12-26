@@ -381,24 +381,9 @@ export const NAVIGATION_ITEMS = [
         href: '/',
     },
     {
-        id: 'map',
-        label: 'Field Map',
-        href: '/map',
-    },
-    {
-        id: 'analytics',
-        label: 'Analytics',
-        href: '/analytics',
-    },
-    {
-        id: 'alerts',
-        label: 'Alerts',
-        href: '/alerts',
-    },
-    {
-        id: 'settings',
-        label: 'Settings',
-        href: '/settings',
+        id: 'yield-prediction',
+        label: 'Yield Prediction',
+        href: '/yield-prediction',
     },
 ] as const;
 

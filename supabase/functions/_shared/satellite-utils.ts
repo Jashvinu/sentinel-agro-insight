@@ -261,6 +261,7 @@ export function getMergedOpticalCollection(
 
 /**
  * Get all available dates from all optical satellites
+ * Returns ALL observations from all satellites (no deduplication by date)
  */
 export async function getAllOpticalDates(
   poi: any,
@@ -271,46 +272,50 @@ export async function getAllOpticalDates(
 ): Promise<Array<{
   date: string;
   timestamp: number;
-  cloud_cover: number;
+  cloud_cover: number | null;
   satellite: string;
   tile_id?: string;
   available_indices: string[];
 }>> {
-  const bestDates = new Map<string, {
+  const allDates: Array<{
     date: string;
     timestamp: number;
     cloud_cover: number | null;
     satellite: string;
-    tile_id?: string;
+    tile_id?: string | undefined;
     available_indices: string[];
-  }>();
+  }> = [];
 
   // Query each satellite independently to get metadata
   const satellites = [
-    { config: SATELLITES.SENTINEL2, bandSelect: ['B4', 'B8'] },
-    { config: SATELLITES.LANDSAT8, bandSelect: ['SR_B4', 'SR_B5'] },
-    { config: SATELLITES.LANDSAT9, bandSelect: ['SR_B4', 'SR_B5'] }
+    { config: SATELLITES.SENTINEL2, name: 'Sentinel-2' },
+    { config: SATELLITES.LANDSAT8, name: 'Landsat-8' },
+    { config: SATELLITES.LANDSAT9, name: 'Landsat-9' }
   ];
 
-  for (const { config } of satellites) {
-    const collection = ee.ImageCollection(config.id)
-      .filterBounds(poi)
-      .filterDate(startDate, endDate)
-      .filter(ee.Filter.lt(config.cloudProperty, maxCloudCover))
-      .sort('system:time_start');
+  console.log(`🔍 Querying ${satellites.length} optical satellites for dates between ${startDate} and ${endDate}`);
 
+  for (const { config, name } of satellites) {
     try {
+      console.log(`  📡 Querying ${name}...`);
+      
+      const collection = ee.ImageCollection(config.id)
+        .filterBounds(poi)
+        .filterDate(startDate, endDate)
+        .filter(ee.Filter.lt(config.cloudProperty, maxCloudCover))
+        .sort('system:time_start');
+
       const imageList = await evaluate(
         collection.map((img: any) => {
           const metadata: any = {
             'date': ee.Date(img.get('system:time_start')).format('YYYY-MM-dd'),
             'timestamp': img.get('system:time_start'),
             'cloud_cover': img.get(config.cloudProperty),
-            'satellite': config.name
+            'satellite': name
           };
 
           // Add tile_id for Sentinel-2
-          if (config.name === 'Sentinel-2') {
+          if (name === 'Sentinel-2') {
             metadata['tile_id'] = img.get('MGRS_TILE');
           } else {
             metadata['tile_id'] = img.get('LANDSAT_PRODUCT_ID');
@@ -320,44 +325,47 @@ export async function getAllOpticalDates(
         }).aggregate_array('.all')
       );
 
-      // Parse results
+      // Parse results - keep ALL observations (don't deduplicate)
+      let count = 0;
       for (const img of imageList) {
+        if (!img || !img.properties) {
+          console.warn(`  ⚠️  Skipping invalid image data from ${name}`);
+          continue;
+        }
+
         const cloudCoverRaw = Number(img.properties.cloud_cover);
         const cloudCover = Number.isFinite(cloudCoverRaw)
           ? Math.round(cloudCoverRaw * 10) / 10
           : null;
 
-        const key = `${img.properties.date}_${img.properties.satellite}`;
-        const existing = bestDates.get(key);
-
         const entry = {
-          date: img.properties.date,
-          timestamp: img.properties.timestamp,
+          date: String(img.properties.date || ''),
+          timestamp: Number(img.properties.timestamp || 0),
           cloud_cover: cloudCover,
-          satellite: img.properties.satellite,
-          tile_id: img.properties.tile_id,
-          available_indices: getIndicesForSatellite(img.properties.satellite)
+          satellite: String(img.properties.satellite || name),
+          tile_id: img.properties.tile_id ? String(img.properties.tile_id) : undefined,
+          available_indices: getIndicesForSatellite(name)
         };
 
-        if (!existing) {
-          bestDates.set(key, entry);
+        // Validate entry before adding
+        if (entry.date && entry.timestamp > 0) {
+          allDates.push(entry);
+          count++;
         } else {
-          const existingCloud = existing.cloud_cover;
-          if (
-            cloudCover !== null &&
-            (existingCloud === null || cloudCover < existingCloud)
-          ) {
-            bestDates.set(key, entry);
-          }
+          console.warn(`  ⚠️  Skipping invalid entry from ${name}:`, entry);
         }
       }
-    } catch (error) {
-      console.error(`Error querying ${config.name}:`, error);
+
+      console.log(`  ✅ ${name}: Found ${count} observations`);
+    } catch (error: any) {
+      console.error(`  ❌ Error querying ${name}:`, error?.message || error);
+      // Continue with other satellites even if one fails
     }
   }
 
   // Sort by timestamp
-  const allDates = Array.from(bestDates.values()).sort((a, b) => a.timestamp - b.timestamp);
+  allDates.sort((a, b) => a.timestamp - b.timestamp);
+  console.log(`✅ Total optical observations: ${allDates.length}`);
 
   return allDates;
 }
@@ -401,46 +409,68 @@ export async function getSentinel1Dates(
   tile_id?: string;
   available_indices: string[];
 }>> {
-  const collection = getSentinel1Collection(poi, startDate, endDate, 'BOTH')
-    .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VV'))
-    .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VH'))
-    .map((img: any) => {
-      const metadata: any = {
-        'date': ee.Date(img.get('system:time_start')).format('YYYY-MM-dd'),
-        'timestamp': img.get('system:time_start'),
-        'satellite': 'Sentinel-1 SAR',
-        'tile_id': img.get('PRODUCT_ID')
+  try {
+    console.log(`  📡 Querying Sentinel-1 SAR...`);
+    
+    const collection = getSentinel1Collection(poi, startDate, endDate, 'BOTH')
+      .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VV'))
+      .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VH'))
+      .map((img: any) => {
+        const metadata: any = {
+          'date': ee.Date(img.get('system:time_start')).format('YYYY-MM-dd'),
+          'timestamp': img.get('system:time_start'),
+          'satellite': 'Sentinel-1 SAR',
+          'tile_id': img.get('PRODUCT_ID')
+        };
+
+        return ee.Feature(null, metadata);
+      });
+
+    const imageList = await evaluate(collection.aggregate_array('.all'));
+
+    const dates: Array<{
+      date: string;
+      timestamp: number;
+      cloud_cover: number | null;
+      satellite: string;
+      tile_id?: string;
+      available_indices: string[];
+    }> = [];
+
+    for (const img of imageList) {
+      if (!img || !img.properties) {
+        console.warn(`  ⚠️  Skipping invalid SAR image data`);
+        continue;
+      }
+
+      const entry = {
+        date: String(img.properties.date || ''),
+        timestamp: Number(img.properties.timestamp || 0),
+        cloud_cover: null,
+        satellite: 'Sentinel-1 SAR',
+        tile_id: img.properties.tile_id ? String(img.properties.tile_id) : undefined,
+        available_indices: getIndicesForSatellite('Sentinel-1 SAR')
       };
 
-      return ee.Feature(null, metadata);
-    });
+      // Validate entry before adding
+      if (entry.date && entry.timestamp > 0) {
+        dates.push(entry);
+      } else {
+        console.warn(`  ⚠️  Skipping invalid SAR entry:`, entry);
+      }
+    }
 
-  const imageList = await evaluate(collection.aggregate_array('.all'));
-
-  const dates: Array<{
-    date: string;
-    timestamp: number;
-    cloud_cover: number | null;
-    satellite: string;
-    tile_id?: string;
-  }> = [];
-
-  for (const img of imageList) {
-    dates.push({
-      date: img.properties.date,
-      timestamp: img.properties.timestamp,
-      cloud_cover: null,
-      satellite: img.properties.satellite,
-      tile_id: img.properties.tile_id,
-      available_indices: getIndicesForSatellite(img.properties.satellite)
-    });
+    console.log(`  ✅ Sentinel-1 SAR: Found ${dates.length} observations`);
+    return dates;
+  } catch (error: any) {
+    console.error(`  ❌ Error querying Sentinel-1 SAR:`, error?.message || error);
+    return []; // Return empty array on error, don't fail completely
   }
-
-  return dates;
 }
 
 /**
  * Get all satellite dates (optical + SAR)
+ * Returns ALL observations from all satellites (Sentinel-2, Landsat-8, Landsat-9, Sentinel-1 SAR)
  */
 export async function getAllSatelliteDates(
   poi: any,
@@ -456,11 +486,25 @@ export async function getAllSatelliteDates(
   tile_id?: string;
   available_indices: string[];
 }>> {
-  const opticalDates = await getAllOpticalDates(poi, startDate, endDate, evaluate, maxCloudCover);
-  const sarDates = await getSentinel1Dates(poi, startDate, endDate, evaluate);
+  console.log(`🛰️  Fetching dates from all satellites (${startDate} to ${endDate})`);
+  
+  // Fetch optical and SAR dates in parallel for better performance
+  const [opticalDates, sarDates] = await Promise.all([
+    getAllOpticalDates(poi, startDate, endDate, evaluate, maxCloudCover),
+    getSentinel1Dates(poi, startDate, endDate, evaluate)
+  ]);
 
   const combined = opticalDates.concat(sarDates);
   combined.sort((a, b) => a.timestamp - b.timestamp);
+
+  // Log summary by satellite
+  const satelliteCounts = combined.reduce((acc: Record<string, number>, item) => {
+    acc[item.satellite] = (acc[item.satellite] || 0) + 1;
+    return acc;
+  }, {});
+  
+  console.log(`✅ Total observations from all satellites: ${combined.length}`);
+  console.log(`📊 Breakdown:`, satelliteCounts);
 
   return combined;
 }

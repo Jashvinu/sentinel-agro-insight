@@ -187,3 +187,8 @@ WHERE tablename = 'water_metrics_cache';
 
 **Next Step**: Apply migration via Supabase Dashboard SQL Editor
 
+
+
+
+
+

@@ -365,7 +365,8 @@ async function calculateNDVI(
   poi: any,
   startDate: string,
   endDate: string,
-  satellite?: OpticalSatellite
+  satellite?: OpticalSatellite,
+  useSingleDate: boolean = false
 ) {
   // Get merged collection from all optical satellites
   const collection = getMergedOpticalCollection(poi, startDate, endDate, 100);
@@ -379,7 +380,8 @@ async function calculateNDVI(
     return null;
   }
 
-  const image = filteredCollection.median();
+  // If using a single date, get the first (closest) image; otherwise use median
+  const image = useSingleDate ? filteredCollection.first() : filteredCollection.median();
   const nir = image.select("B8");
   const red = image.select("B4");
 
@@ -450,7 +452,8 @@ async function calculateEVI(
   poi: any,
   startDate: string,
   endDate: string,
-  satellite?: OpticalSatellite
+  satellite?: OpticalSatellite,
+  useSingleDate: boolean = false
 ) {
   const collection = getMergedOpticalCollection(poi, startDate, endDate, 100);
 
@@ -463,7 +466,7 @@ async function calculateEVI(
     return null;
   }
 
-  const image = filteredCollection.median();
+  const image = useSingleDate ? filteredCollection.first() : filteredCollection.median();
   const nir = image.select("B8");
   const red = image.select("B4");
   const blue = image.select("B2");
@@ -504,6 +507,19 @@ async function calculateEVI(
     palette: ["red", "yellow", "green", "darkgreen"]
   };
 
+  const stats = await safeReduceRegion(clippedEvi, {
+    reducer: ee.Reducer.mean().combine({
+      reducer2: ee.Reducer.stdDev(),
+      sharedInputs: true
+    }),
+    geometry: poi,
+    scale: scale,
+    maxPixels: 1e9
+  });
+
+  const meanValue = stats && isFiniteNumber(stats.EVI_mean) ? stats.EVI_mean : null;
+  const stdDevValue = stats && isFiniteNumber(stats.EVI_stdDev) ? stats.EVI_stdDev : null;
+
   const mapIdResult = await getMapIdWithRetry(clippedEvi, vis);
   const cloudCover = await computeCloudCover(filteredCollection, evaluate);
 
@@ -511,6 +527,10 @@ async function calculateEVI(
     urlFormat: mapIdResult.urlFormat,
     mapid: mapIdResult.mapid,
     token: mapIdResult.token,
+    min_value: minMax.EVI_min,
+    max_value: minMax.EVI_max,
+    mean_value: meanValue,
+    std_dev: stdDevValue,
     data_source: dataSource,
     cloud_cover: cloudCover,
     satellite: satellite || null,
@@ -526,7 +546,8 @@ async function calculateSAVI(
   poi: any,
   startDate: string,
   endDate: string,
-  satellite?: OpticalSatellite
+  satellite?: OpticalSatellite,
+  useSingleDate: boolean = false
 ) {
   const collection = getMergedOpticalCollection(poi, startDate, endDate, 100);
 
@@ -539,7 +560,7 @@ async function calculateSAVI(
     return null;
   }
 
-  const image = filteredCollection.median();
+  const image = useSingleDate ? filteredCollection.first() : filteredCollection.median();
   const nir = image.select("B8");
   const red = image.select("B4");
   const L = 0.5;
@@ -567,6 +588,19 @@ async function calculateSAVI(
     return null;
   }
 
+  const stats = await safeReduceRegion(clippedSavi, {
+    reducer: ee.Reducer.mean().combine({
+      reducer2: ee.Reducer.stdDev(),
+      sharedInputs: true
+    }),
+    geometry: poi,
+    scale: scale,
+    maxPixels: 1e9
+  });
+
+  const meanValue = stats && isFiniteNumber(stats.SAVI_mean) ? stats.SAVI_mean : null;
+  const stdDevValue = stats && isFiniteNumber(stats.SAVI_stdDev) ? stats.SAVI_stdDev : null;
+
   const vis = {
     min: minMax.SAVI_min,
     max: minMax.SAVI_max,
@@ -580,6 +614,10 @@ async function calculateSAVI(
     urlFormat: mapIdResult.urlFormat,
     mapid: mapIdResult.mapid,
     token: mapIdResult.token,
+    min_value: minMax.SAVI_min,
+    max_value: minMax.SAVI_max,
+    mean_value: meanValue,
+    std_dev: stdDevValue,
     data_source: dataSource,
     cloud_cover: cloudCover,
     satellite: satellite || null,
@@ -595,7 +633,8 @@ async function calculateMSAVI(
   poi: any,
   startDate: string,
   endDate: string,
-  satellite?: OpticalSatellite
+  satellite?: OpticalSatellite,
+  useSingleDate: boolean = false
 ) {
   const collection = getMergedOpticalCollection(poi, startDate, endDate, 100);
 
@@ -608,7 +647,7 @@ async function calculateMSAVI(
     return null;
   }
 
-  const image = filteredCollection.median();
+  const image = useSingleDate ? filteredCollection.first() : filteredCollection.median();
   const nir = image.select("B8");
   const red = image.select("B4");
 
@@ -635,6 +674,19 @@ async function calculateMSAVI(
     return null;
   }
 
+  const stats = await safeReduceRegion(clippedMsavi, {
+    reducer: ee.Reducer.mean().combine({
+      reducer2: ee.Reducer.stdDev(),
+      sharedInputs: true
+    }),
+    geometry: poi,
+    scale: scale,
+    maxPixels: 1e9
+  });
+
+  const meanValue = stats && isFiniteNumber(stats.MSAVI_mean) ? stats.MSAVI_mean : null;
+  const stdDevValue = stats && isFiniteNumber(stats.MSAVI_stdDev) ? stats.MSAVI_stdDev : null;
+
   const vis = {
     min: minMax.MSAVI_min,
     max: minMax.MSAVI_max,
@@ -648,6 +700,10 @@ async function calculateMSAVI(
     urlFormat: mapIdResult.urlFormat,
     mapid: mapIdResult.mapid,
     token: mapIdResult.token,
+    min_value: minMax.MSAVI_min,
+    max_value: minMax.MSAVI_max,
+    mean_value: meanValue,
+    std_dev: stdDevValue,
     data_source: dataSource,
     cloud_cover: cloudCover,
     satellite: satellite || null,
@@ -663,7 +719,8 @@ async function calculateNDWI(
   poi: any,
   startDate: string,
   endDate: string,
-  satellite?: OpticalSatellite
+  satellite?: OpticalSatellite,
+  useSingleDate: boolean = false
 ) {
   const collection = getMergedOpticalCollection(poi, startDate, endDate, 100);
 
@@ -676,7 +733,7 @@ async function calculateNDWI(
     return null;
   }
 
-  const image = filteredCollection.median();
+  const image = useSingleDate ? filteredCollection.first() : filteredCollection.median();
   const nir = image.select("B8");
   const swir = image.select("B11");
 
@@ -700,6 +757,19 @@ async function calculateNDWI(
     return null;
   }
 
+  const stats = await safeReduceRegion(clippedNdwi, {
+    reducer: ee.Reducer.mean().combine({
+      reducer2: ee.Reducer.stdDev(),
+      sharedInputs: true
+    }),
+    geometry: poi,
+    scale: scale,
+    maxPixels: 1e9
+  });
+
+  const meanValue = stats && isFiniteNumber(stats.NDWI_mean) ? stats.NDWI_mean : null;
+  const stdDevValue = stats && isFiniteNumber(stats.NDWI_stdDev) ? stats.NDWI_stdDev : null;
+
   const vis = {
     min: minMax.NDWI_min,
     max: minMax.NDWI_max,
@@ -713,6 +783,10 @@ async function calculateNDWI(
     urlFormat: mapIdResult.urlFormat,
     mapid: mapIdResult.mapid,
     token: mapIdResult.token,
+    min_value: minMax.NDWI_min,
+    max_value: minMax.NDWI_max,
+    mean_value: meanValue,
+    std_dev: stdDevValue,
     data_source: dataSource,
     cloud_cover: cloudCover,
     satellite: satellite || null,
@@ -728,7 +802,8 @@ async function calculateNitrogen(
   poi: any,
   startDate: string,
   endDate: string,
-  satellite?: OpticalSatellite
+  satellite?: OpticalSatellite,
+  useSingleDate: boolean = false
 ) {
   const collection = getMergedOpticalCollection(poi, startDate, endDate, 100);
 
@@ -741,7 +816,7 @@ async function calculateNitrogen(
     return null;
   }
 
-  const image = filteredCollection.median();
+  const image = useSingleDate ? filteredCollection.first() : filteredCollection.median();
   const nir = image.select("B8");
   const red = image.select("B4");
 
@@ -767,6 +842,19 @@ async function calculateNitrogen(
     return null;
   }
 
+  const stats = await safeReduceRegion(clippedNitrogen, {
+    reducer: ee.Reducer.mean().combine({
+      reducer2: ee.Reducer.stdDev(),
+      sharedInputs: true
+    }),
+    geometry: poi,
+    scale: scale,
+    maxPixels: 1e9
+  });
+
+  const meanValue = stats && isFiniteNumber(stats.Nitrogen_mean) ? stats.Nitrogen_mean : null;
+  const stdDevValue = stats && isFiniteNumber(stats.Nitrogen_stdDev) ? stats.Nitrogen_stdDev : null;
+
   const vis = {
     min: minMax.Nitrogen_min,
     max: minMax.Nitrogen_max,
@@ -780,6 +868,10 @@ async function calculateNitrogen(
     urlFormat: mapIdResult.urlFormat,
     mapid: mapIdResult.mapid,
     token: mapIdResult.token,
+    min_value: minMax.Nitrogen_min,
+    max_value: minMax.Nitrogen_max,
+    mean_value: meanValue,
+    std_dev: stdDevValue,
     data_source: dataSource,
     cloud_cover: cloudCover,
     satellite: satellite || null,
@@ -795,7 +887,8 @@ async function calculatePhosphorus(
   poi: any,
   startDate: string,
   endDate: string,
-  satellite?: OpticalSatellite
+  satellite?: OpticalSatellite,
+  useSingleDate: boolean = false
 ) {
   const collection = getMergedOpticalCollection(poi, startDate, endDate, 100);
 
@@ -808,7 +901,7 @@ async function calculatePhosphorus(
     return null;
   }
 
-  const image = filteredCollection.median();
+  const image = useSingleDate ? filteredCollection.first() : filteredCollection.median();
   const nir = image.select("B8");
   const red = image.select("B4");
   const blue = image.select("B2");
@@ -845,6 +938,19 @@ async function calculatePhosphorus(
     return null;
   }
 
+  const stats = await safeReduceRegion(clippedPhosphorus, {
+    reducer: ee.Reducer.mean().combine({
+      reducer2: ee.Reducer.stdDev(),
+      sharedInputs: true
+    }),
+    geometry: poi,
+    scale: scale,
+    maxPixels: 1e9
+  });
+
+  const meanValue = stats && isFiniteNumber(stats.Phosphorus_mean) ? stats.Phosphorus_mean : null;
+  const stdDevValue = stats && isFiniteNumber(stats.Phosphorus_stdDev) ? stats.Phosphorus_stdDev : null;
+
   const vis = {
     min: minMax.Phosphorus_min,
     max: minMax.Phosphorus_max,
@@ -858,6 +964,10 @@ async function calculatePhosphorus(
     urlFormat: mapIdResult.urlFormat,
     mapid: mapIdResult.mapid,
     token: mapIdResult.token,
+    min_value: minMax.Phosphorus_min,
+    max_value: minMax.Phosphorus_max,
+    mean_value: meanValue,
+    std_dev: stdDevValue,
     data_source: dataSource,
     cloud_cover: cloudCover,
     satellite: satellite || null,
@@ -873,7 +983,8 @@ async function calculatePotassium(
   poi: any,
   startDate: string,
   endDate: string,
-  satellite?: OpticalSatellite
+  satellite?: OpticalSatellite,
+  useSingleDate: boolean = false
 ) {
   const collection = getMergedOpticalCollection(poi, startDate, endDate, 100);
 
@@ -886,7 +997,7 @@ async function calculatePotassium(
     return null;
   }
 
-  const image = filteredCollection.median();
+  const image = useSingleDate ? filteredCollection.first() : filteredCollection.median();
   const nir = image.select("B8");
   const red = image.select("B4");
   const L = 0.5;
@@ -916,6 +1027,19 @@ async function calculatePotassium(
     return null;
   }
 
+  const stats = await safeReduceRegion(clippedPotassium, {
+    reducer: ee.Reducer.mean().combine({
+      reducer2: ee.Reducer.stdDev(),
+      sharedInputs: true
+    }),
+    geometry: poi,
+    scale: scale,
+    maxPixels: 1e9
+  });
+
+  const meanValue = stats && isFiniteNumber(stats.Potassium_mean) ? stats.Potassium_mean : null;
+  const stdDevValue = stats && isFiniteNumber(stats.Potassium_stdDev) ? stats.Potassium_stdDev : null;
+
   const vis = {
     min: minMax.Potassium_min,
     max: minMax.Potassium_max,
@@ -929,6 +1053,10 @@ async function calculatePotassium(
     urlFormat: mapIdResult.urlFormat,
     mapid: mapIdResult.mapid,
     token: mapIdResult.token,
+    min_value: minMax.Potassium_min,
+    max_value: minMax.Potassium_max,
+    mean_value: meanValue,
+    std_dev: stdDevValue,
     data_source: dataSource,
     cloud_cover: cloudCover,
     satellite: satellite || null,
@@ -944,7 +1072,8 @@ async function calculateSalinity(
   poi: any,
   startDate: string,
   endDate: string,
-  satellite?: OpticalSatellite
+  satellite?: OpticalSatellite,
+  useSingleDate: boolean = false
 ) {
   const collection = getMergedOpticalCollection(poi, startDate, endDate, 100);
 
@@ -957,7 +1086,7 @@ async function calculateSalinity(
     return null;
   }
 
-  const image = filteredCollection.median();
+  const image = useSingleDate ? filteredCollection.first() : filteredCollection.median();
   const blue = image.select("B2");
   const red = image.select("B4");
 
@@ -985,6 +1114,19 @@ async function calculateSalinity(
     return null;
   }
 
+  const stats = await safeReduceRegion(clippedSalinity, {
+    reducer: ee.Reducer.mean().combine({
+      reducer2: ee.Reducer.stdDev(),
+      sharedInputs: true
+    }),
+    geometry: poi,
+    scale: scale,
+    maxPixels: 1e9
+  });
+
+  const meanValue = stats && isFiniteNumber(stats.Salinity_mean) ? stats.Salinity_mean : null;
+  const stdDevValue = stats && isFiniteNumber(stats.Salinity_stdDev) ? stats.Salinity_stdDev : null;
+
   const vis = {
     min: minMax.Salinity_min,
     max: minMax.Salinity_max,
@@ -998,6 +1140,10 @@ async function calculateSalinity(
     urlFormat: mapIdResult.urlFormat,
     mapid: mapIdResult.mapid,
     token: mapIdResult.token,
+    min_value: minMax.Salinity_min,
+    max_value: minMax.Salinity_max,
+    mean_value: meanValue,
+    std_dev: stdDevValue,
     data_source: dataSource,
     cloud_cover: cloudCover,
     satellite: satellite || null,
@@ -1013,7 +1159,8 @@ async function calculatePH(
   poi: any,
   startDate: string,
   endDate: string,
-  satellite?: OpticalSatellite
+  satellite?: OpticalSatellite,
+  useSingleDate: boolean = false
 ) {
   const collection = getMergedOpticalCollection(poi, startDate, endDate, 100);
 
@@ -1026,7 +1173,7 @@ async function calculatePH(
     return null;
   }
 
-  const image = filteredCollection.median();
+  const image = useSingleDate ? filteredCollection.first() : filteredCollection.median();
   const blue = image.select("B2");
   const swir = image.select("B11");
 
@@ -1051,6 +1198,19 @@ async function calculatePH(
     return null;
   }
 
+  const stats = await safeReduceRegion(clippedPH, {
+    reducer: ee.Reducer.mean().combine({
+      reducer2: ee.Reducer.stdDev(),
+      sharedInputs: true
+    }),
+    geometry: poi,
+    scale: scale,
+    maxPixels: 1e9
+  });
+
+  const meanValue = stats && isFiniteNumber(stats.pH_mean) ? stats.pH_mean : null;
+  const stdDevValue = stats && isFiniteNumber(stats.pH_stdDev) ? stats.pH_stdDev : null;
+
   const vis = {
     min: minMax.pH_min,
     max: minMax.pH_max,
@@ -1064,6 +1224,10 @@ async function calculatePH(
     urlFormat: mapIdResult.urlFormat,
     mapid: mapIdResult.mapid,
     token: mapIdResult.token,
+    min_value: minMax.pH_min,
+    max_value: minMax.pH_max,
+    mean_value: meanValue,
+    std_dev: stdDevValue,
     data_source: dataSource,
     cloud_cover: cloudCover,
     satellite: satellite || null,
@@ -1079,7 +1243,8 @@ async function calculateMoisture(
   poi: any,
   startDate: string,
   endDate: string,
-  satellite?: OpticalSatellite
+  satellite?: OpticalSatellite,
+  useSingleDate: boolean = false
 ) {
   const collection = getMergedOpticalCollection(poi, startDate, endDate, 100);
 
@@ -1092,7 +1257,7 @@ async function calculateMoisture(
     return null;
   }
 
-  const image = filteredCollection.median();
+  const image = useSingleDate ? filteredCollection.first() : filteredCollection.median();
   const nir = image.select("B8");
   const swir = image.select("B11");
 
@@ -1120,6 +1285,19 @@ async function calculateMoisture(
     return null;
   }
 
+  const stats = await safeReduceRegion(clippedMoisture, {
+    reducer: ee.Reducer.mean().combine({
+      reducer2: ee.Reducer.stdDev(),
+      sharedInputs: true
+    }),
+    geometry: poi,
+    scale: scale,
+    maxPixels: 1e9
+  });
+
+  const meanValue = stats && isFiniteNumber(stats.Moisture_mean) ? stats.Moisture_mean : null;
+  const stdDevValue = stats && isFiniteNumber(stats.Moisture_stdDev) ? stats.Moisture_stdDev : null;
+
   const vis = {
     min: minMax.Moisture_min,
     max: minMax.Moisture_max,
@@ -1133,6 +1311,10 @@ async function calculateMoisture(
     urlFormat: mapIdResult.urlFormat,
     mapid: mapIdResult.mapid,
     token: mapIdResult.token,
+    min_value: minMax.Moisture_min,
+    max_value: minMax.Moisture_max,
+    mean_value: meanValue,
+    std_dev: stdDevValue,
     data_source: dataSource,
     cloud_cover: cloudCover,
     satellite: satellite || null,
@@ -1144,12 +1326,25 @@ async function calculateMoisture(
 }
 
 // Calculate SAR-based Soil Moisture (Sentinel-1)
-async function calculateSarMoisture(poi: any, startDate: string, endDate: string) {
+async function calculateSarMoisture(
+  poi: any,
+  startDate: string,
+  endDate: string,
+  satellite?: OpticalSatellite,
+  useSingleDate: boolean = false
+) {
   const collection = getSentinel1Collection(poi, startDate, endDate, 'BOTH')
     .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VV'))
     .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VH'));
 
-  const image = collection.median();
+  // Check if collection has any images
+  const imageCount = await evaluate(collection.size());
+  if (!imageCount || imageCount <= 0) {
+    console.warn(`No Sentinel-1 SAR images available for date range ${startDate} to ${endDate}`);
+    return null;
+  }
+
+  const image = useSingleDate ? collection.first() : collection.median();
   const vv = image.select('VV');
   const vh = image.select('VH');
 
@@ -1229,7 +1424,8 @@ async function calculateCarbon(
   poi: any,
   startDate: string,
   endDate: string,
-  satellite?: OpticalSatellite
+  satellite?: OpticalSatellite,
+  useSingleDate: boolean = false
 ) {
   const collection = getMergedOpticalCollection(poi, startDate, endDate, 100);
 
@@ -1242,7 +1438,7 @@ async function calculateCarbon(
     return null;
   }
 
-  const image = filteredCollection.median();
+  const image = useSingleDate ? filteredCollection.first() : filteredCollection.median();
   const nir = image.select("B8");
   const red = image.select("B4");
 
@@ -1269,6 +1465,19 @@ async function calculateCarbon(
     return null;
   }
 
+  const stats = await safeReduceRegion(clippedCarbon, {
+    reducer: ee.Reducer.mean().combine({
+      reducer2: ee.Reducer.stdDev(),
+      sharedInputs: true
+    }),
+    geometry: poi,
+    scale: scale,
+    maxPixels: 1e9
+  });
+
+  const meanValue = stats && isFiniteNumber(stats.Carbon_mean) ? stats.Carbon_mean : null;
+  const stdDevValue = stats && isFiniteNumber(stats.Carbon_stdDev) ? stats.Carbon_stdDev : null;
+
   const vis = {
     min: minMax.Carbon_min,
     max: minMax.Carbon_max,
@@ -1282,6 +1491,10 @@ async function calculateCarbon(
     urlFormat: mapIdResult.urlFormat,
     mapid: mapIdResult.mapid,
     token: mapIdResult.token,
+    min_value: minMax.Carbon_min,
+    max_value: minMax.Carbon_max,
+    mean_value: meanValue,
+    std_dev: stdDevValue,
     data_source: dataSource,
     cloud_cover: cloudCover,
     satellite: satellite || null,
@@ -1304,9 +1517,67 @@ Deno.serve(async (req) => {
   try {
     const url = new URL(req.url);
     const index = url.searchParams.get('index') || 'ndvi';
-    const start = url.searchParams.get('start') || '2024-01-01';
-    const end = url.searchParams.get('end') || '2024-12-31';
+    const satelliteParam = url.searchParams.get('satellite'); // e.g., "Sentinel-2", "Landsat-8", "Landsat-9", "Sentinel-1 SAR"
+    const dateParam = url.searchParams.get('date'); // Specific date: YYYY-MM-DD
+
+    // If a specific date is provided, use it as both start and end (single day)
+    let start: string;
+    let end: string;
+
+    if (dateParam) {
+      // Validate date format
+      const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+      if (!dateRegex.test(dateParam)) {
+        return errorResponse('Invalid date format. Use YYYY-MM-DD (e.g., 2024-06-15)', 400);
+      }
+      start = dateParam;
+      end = dateParam;
+      console.log(`Using specific date: ${dateParam}`);
+    } else {
+      // Calculate default date range - use today as end date
+      const defaultEndDate = new Date(); // Use today
+      const defaultStartDate = new Date(defaultEndDate);
+      defaultStartDate.setMonth(defaultStartDate.getMonth() - 6); // Last 6 months
+
+      start = url.searchParams.get('start') || defaultStartDate.toISOString().split('T')[0];
+      end = url.searchParams.get('end') || defaultEndDate.toISOString().split('T')[0];
+    }
+
     const polygon = url.searchParams.get('polygon');
+
+    // Validate satellite parameter if provided
+    const validSatellites = ['Sentinel-2', 'Landsat-8', 'Landsat-9', 'Sentinel-1 SAR'];
+    let selectedSatellite: OpticalSatellite | undefined;
+    if (satelliteParam) {
+      if (!validSatellites.includes(satelliteParam)) {
+        return errorResponse(
+          `Invalid satellite: ${satelliteParam}. Valid options: ${validSatellites.join(', ')}`,
+          400
+        );
+      }
+      // Only optical satellites can be used for most indices (except sar_moisture)
+      if (satelliteParam === 'Sentinel-1 SAR' && index.toLowerCase() !== 'sar_moisture') {
+        return errorResponse(
+          `Sentinel-1 SAR can only be used with sar_moisture index. Requested index: ${index}`,
+          400
+        );
+      }
+      if (satelliteParam !== 'Sentinel-1 SAR') {
+        selectedSatellite = satelliteParam as OpticalSatellite;
+      }
+      console.log(`Filtering to satellite: ${satelliteParam}`);
+    }
+
+    // Validate date range - only reject future dates
+    const today = new Date();
+    const todayStr = today.toISOString().split('T')[0];
+
+    if (end > todayStr) {
+      return errorResponse(
+        `Date range extends into the future. Latest allowed date is ${todayStr}. Requested end date: ${end}. Please select today or an earlier date.`,
+        400
+      );
+    }
 
     console.log(`Processing agricultural indices request for index: ${index}, date range: ${start} to ${end}`);
 
@@ -1401,50 +1672,51 @@ Deno.serve(async (req) => {
 
     // Calculate different indices based on selection
     const indexKey = index.toLowerCase();
+    const useSingleDate = dateParam !== null; // Flag to use single image instead of median
 
     let result;
     switch (indexKey) {
       case 'ndvi':
-        result = await calculateNDVI(poi, start, end);
+        result = await calculateNDVI(poi, start, end, selectedSatellite, useSingleDate);
         break;
       case 'evi':
-        result = await calculateEVI(poi, start, end);
+        result = await calculateEVI(poi, start, end, selectedSatellite, useSingleDate);
         break;
       case 'savi':
-        result = await calculateSAVI(poi, start, end);
+        result = await calculateSAVI(poi, start, end, selectedSatellite, useSingleDate);
         break;
       case 'msavi':
-        result = await calculateMSAVI(poi, start, end);
+        result = await calculateMSAVI(poi, start, end, selectedSatellite, useSingleDate);
         break;
       case 'ndwi':
-        result = await calculateNDWI(poi, start, end);
+        result = await calculateNDWI(poi, start, end, selectedSatellite, useSingleDate);
         break;
       case 'nitrogen':
-        result = await calculateNitrogen(poi, start, end);
+        result = await calculateNitrogen(poi, start, end, selectedSatellite, useSingleDate);
         break;
       case 'phosphorus':
-        result = await calculatePhosphorus(poi, start, end);
+        result = await calculatePhosphorus(poi, start, end, selectedSatellite, useSingleDate);
         break;
       case 'potassium':
-        result = await calculatePotassium(poi, start, end);
+        result = await calculatePotassium(poi, start, end, selectedSatellite, useSingleDate);
         break;
       case 'salinity':
-        result = await calculateSalinity(poi, start, end);
+        result = await calculateSalinity(poi, start, end, selectedSatellite, useSingleDate);
         break;
       case 'ph':
-        result = await calculatePH(poi, start, end);
+        result = await calculatePH(poi, start, end, selectedSatellite, useSingleDate);
         break;
       case 'moisture':
-        result = await calculateMoisture(poi, start, end);
+        result = await calculateMoisture(poi, start, end, selectedSatellite, useSingleDate);
         break;
       case 'sar_moisture':
-        result = await calculateSarMoisture(poi, start, end);
+        result = await calculateSarMoisture(poi, start, end, satelliteParam === 'Sentinel-1 SAR' ? undefined : selectedSatellite, useSingleDate);
         break;
       case 'carbon':
-        result = await calculateCarbon(poi, start, end);
+        result = await calculateCarbon(poi, start, end, selectedSatellite, useSingleDate);
         break;
       default:
-        result = await calculateNDVI(poi, start, end);
+        result = await calculateNDVI(poi, start, end, selectedSatellite, useSingleDate);
         break;
     }
 
@@ -1476,7 +1748,18 @@ Deno.serve(async (req) => {
     const supabase = createClient(supabaseUrl, supabaseKey);
 
     // Save to database (non-blocking)
-    const tileUrl = result.urlFormat.replace('{x}', '0').replace('{y}', '0').replace('{z}', '0');
+    // Construct proper tile URL from mapid and token
+    let tileUrl = '';
+    if (result.mapid && result.token) {
+      // Use the mapid and token to construct the tile URL
+      tileUrl = `https://earthengine.googleapis.com/map/${result.mapid}/{z}/{x}/{y}?token=${result.token}`;
+    } else if (result.urlFormat) {
+      // Fallback to urlFormat if available
+      tileUrl = result.urlFormat;
+    } else {
+      // Construct from available data
+      console.warn('No mapid/token or urlFormat available for tile URL');
+    }
     const cloudFilterLabel = result.cloud_filter || "< 100%";
     const dbResult = await saveToDatabase(
       supabase,
@@ -1497,34 +1780,80 @@ Deno.serve(async (req) => {
 
     const satelliteLayers: SatelliteLayerResult[] = [];
 
-    if (indexKey === 'sar_moisture') {
-      satelliteLayers.push({
-        satellite: 'Sentinel-1 SAR',
-        urlFormat: result.urlFormat,
-        mapid: result.mapid,
-        token: result.token,
-        cloudCover: typeof result.cloud_cover === 'number' ? result.cloud_cover : null,
-        min_value: result.min_value ?? null,
-        max_value: result.max_value ?? null,
-        mean_value: result.mean_value ?? null,
-        std_dev: result.std_dev ?? null,
-        data_source: result.data_source || buildDataSource(['Sentinel-1 SAR']),
-        metadata: {
-          algorithm: index.toUpperCase(),
-          calculationMethod: getCalculationMethod(index),
-          cloudFilter: result.cloud_filter || 'All-weather radar',
-          dateRange: { start, end }
-        }
-      });
-    } else {
-      for (const sat of OPTICAL_SATELLITES) {
-        try {
-          const satLayer = await calculateSatelliteLayer(indexKey, poi, start, end, sat);
-          if (satLayer) {
-            satelliteLayers.push(satLayer);
+    // If a specific satellite is requested, only return that satellite's data
+    if (satelliteParam) {
+      // For SAR moisture, the result already contains the satellite data
+      if (indexKey === 'sar_moisture' && satelliteParam === 'Sentinel-1 SAR') {
+        satelliteLayers.push({
+          satellite: 'Sentinel-1 SAR',
+          urlFormat: result.urlFormat,
+          mapid: result.mapid,
+          token: result.token,
+          cloudCover: typeof result.cloud_cover === 'number' ? result.cloud_cover : null,
+          min_value: result.min_value ?? null,
+          max_value: result.max_value ?? null,
+          mean_value: result.mean_value ?? null,
+          std_dev: result.std_dev ?? null,
+          data_source: result.data_source || buildDataSource(['Sentinel-1 SAR']),
+          metadata: {
+            algorithm: index.toUpperCase(),
+            calculationMethod: getCalculationMethod(index),
+            cloudFilter: result.cloud_filter || 'All-weather radar',
+            dateRange: { start, end }
           }
-        } catch (satError) {
-          console.warn(`Failed to build satellite layer for ${sat}:`, satError);
+        });
+      } else if (selectedSatellite) {
+        // For optical satellites, use the result we already calculated
+        satelliteLayers.push({
+          satellite: selectedSatellite,
+          urlFormat: result.urlFormat,
+          mapid: result.mapid,
+          token: result.token,
+          cloudCover: typeof result.cloud_cover === 'number' ? result.cloud_cover : null,
+          min_value: result.min_value ?? null,
+          max_value: result.max_value ?? null,
+          mean_value: result.mean_value ?? null,
+          std_dev: result.std_dev ?? null,
+          data_source: result.data_source || buildDataSource([selectedSatellite]),
+          metadata: {
+            algorithm: index.toUpperCase(),
+            calculationMethod: getCalculationMethod(index),
+            cloudFilter: result.cloud_filter || '< 100%',
+            dateRange: { start, end }
+          }
+        });
+      }
+    } else {
+      // No specific satellite requested - return all satellites (original behavior)
+      if (indexKey === 'sar_moisture') {
+        satelliteLayers.push({
+          satellite: 'Sentinel-1 SAR',
+          urlFormat: result.urlFormat,
+          mapid: result.mapid,
+          token: result.token,
+          cloudCover: typeof result.cloud_cover === 'number' ? result.cloud_cover : null,
+          min_value: result.min_value ?? null,
+          max_value: result.max_value ?? null,
+          mean_value: result.mean_value ?? null,
+          std_dev: result.std_dev ?? null,
+          data_source: result.data_source || buildDataSource(['Sentinel-1 SAR']),
+          metadata: {
+            algorithm: index.toUpperCase(),
+            calculationMethod: getCalculationMethod(index),
+            cloudFilter: result.cloud_filter || 'All-weather radar',
+            dateRange: { start, end }
+          }
+        });
+      } else {
+        for (const sat of OPTICAL_SATELLITES) {
+          try {
+            const satLayer = await calculateSatelliteLayer(indexKey, poi, start, end, sat);
+            if (satLayer) {
+              satelliteLayers.push(satLayer);
+            }
+          } catch (satError) {
+            console.warn(`Failed to build satellite layer for ${sat}:`, satError);
+          }
         }
       }
     }
