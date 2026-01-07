@@ -211,7 +211,20 @@ Deno.serve(async (req) => {
       }> = [];
       const skippedDates: string[] = [];
 
-      for (const img of imageList) {
+      // Filter out future dates before processing
+      const todayStr = new Date().toISOString().split('T')[0];
+      const validImageList = imageList.filter((img: any) => {
+        const obsDate = img.date;
+        if (obsDate > todayStr) {
+          console.log(`  ⏭️  Skipping future date: ${obsDate} (${img.satellite})`);
+          return false;
+        }
+        return true;
+      });
+
+      console.log(`📅 After filtering future dates: ${validImageList.length} dates (removed ${imageList.length - validImageList.length} future dates)`);
+
+      for (const img of validImageList) {
         const obsDate = img.date;
 
         const entryKey = `${obsDate}_${img.satellite || 'Unknown'}`;

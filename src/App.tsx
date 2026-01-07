@@ -5,7 +5,8 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { Skeleton } from "@/components/ui/skeleton";
-import Index from "./pages/Index";
+import Dashboard from "./pages/Dashboard";
+import YieldPrediction from "./pages/YieldPrediction";
 import DrawPolygon from "./pages/DrawPolygon";
 import NotFound from "./pages/NotFound";
 import Login from "./pages/Login";
@@ -83,7 +84,7 @@ class ErrorBoundary extends React.Component<
 // Component to handle auto-sync on app load
 const AppContent = () => {
   useAutoSync(); // Automatically sync satellite observations on load
-  
+
   return (
     <BrowserRouter>
       <Suspense fallback={<LoadingFallback />}>
@@ -91,25 +92,41 @@ const AppContent = () => {
           {/* Public routes */}
           <Route path="/login" element={<Login />} />
           <Route path="/signup" element={<Signup />} />
-          
+
           {/* Protected routes */}
-          <Route 
-            path="/" 
+          <Route
+            path="/"
             element={
               <ProtectedRoute requireFarm={true}>
-                <Index />
+                <Dashboard />
               </ProtectedRoute>
-            } 
+            }
           />
-          <Route 
-            path="/draw-polygon" 
+          <Route
+            path="/dashboard"
+            element={
+              <ProtectedRoute requireFarm={true}>
+                <Dashboard />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/yield-prediction"
+            element={
+              <ProtectedRoute requireFarm={true}>
+                <YieldPrediction />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/draw-polygon"
             element={
               <ProtectedRoute>
                 <DrawPolygon />
               </ProtectedRoute>
-            } 
+            }
           />
-          
+
           {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
           <Route path="*" element={<NotFound />} />
         </Routes>

@@ -73,6 +73,7 @@ FUNCTIONS=(
     "health"
     "agricultural-indices"
     "farm-timeline"
+    "field-overview"
     "get-available-dates"
     "get-observation-dates"
     "sync-satellite-dates"

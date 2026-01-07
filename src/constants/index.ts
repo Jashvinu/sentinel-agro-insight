@@ -378,7 +378,7 @@ export const NAVIGATION_ITEMS = [
     {
         id: 'dashboard',
         label: 'Dashboard',
-        href: '/',
+        href: '/dashboard',
     },
     {
         id: 'yield-prediction',

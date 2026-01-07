@@ -9,11 +9,13 @@ import {
   Satellite,
   Menu,
   X,
-  LogOut
+  LogOut,
+  Activity
 } from 'lucide-react';
 import { NAVIGATION_ITEMS, APP_CONFIG } from '@/constants';
 import { NavigationItem } from '@/types';
 import { useAuth } from '@/hooks/useAuth';
+import { Link, useLocation } from 'react-router-dom';
 
 interface NavigationProps {
   currentPage?: string;
@@ -29,12 +31,24 @@ export const Navigation: React.FC<NavigationProps> = ({
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const { user, signOut } = useAuth();
 
-  const handleNavigation = (page: string) => {
+  const handleNavigation = (page: string, href?: string) => {
+    if (href) {
+      // Use router navigation for href-based navigation
+      window.location.href = href;
+      return;
+    }
     if (onNavigate) {
       onNavigate(page);
     }
     setMobileMenuOpen(false);
   };
+
+  const isActiveRoute = (href?: string) => {
+    if (!href) return false;
+    return location.pathname === href;
+  };
+
+  const location = useLocation();
 
   // Map navigation items to icons
   const getIcon = (id: string) => {
@@ -66,24 +80,25 @@ export const Navigation: React.FC<NavigationProps> = ({
           <div className="flex items-center space-x-1">
             {NAVIGATION_ITEMS.map((item) => {
               const Icon = getIcon(item.id);
-              const isActive = currentPage === item.id;
+              const isActive = item.href ? isActiveRoute(item.href) : currentPage === item.id;
 
               return (
-                <Button
-                  key={item.id}
-                  variant={isActive ? "default" : "ghost"}
-                  size="sm"
-                  className={cn(
-                    "flex items-center space-x-2 px-3 py-2 transition-all duration-200",
-                    isActive
-                      ? "bg-primary text-primary-foreground shadow-glow"
-                      : "hover:bg-muted text-muted-foreground hover:text-foreground"
-                  )}
-                  onClick={() => handleNavigation(item.id)}
-                >
-                  <Icon className="w-4 h-4" />
-                  <span className="font-medium">{item.label}</span>
-                </Button>
+                <Link key={item.id} to={item.href || '#'}>
+                  <Button
+                    variant={isActive ? "default" : "ghost"}
+                    size="sm"
+                    className={cn(
+                      "flex items-center space-x-2 px-3 py-2 transition-all duration-200",
+                      isActive
+                        ? "bg-primary text-primary-foreground shadow-glow"
+                        : "hover:bg-muted text-muted-foreground hover:text-foreground"
+                    )}
+                    onClick={() => !item.href && handleNavigation(item.id)}
+                  >
+                    <Icon className="w-4 h-4" />
+                    <span className="font-medium">{item.label}</span>
+                  </Button>
+                </Link>
               );
             })}
           </div>
@@ -145,9 +160,25 @@ export const Navigation: React.FC<NavigationProps> = ({
             <div className="grid grid-cols-2 gap-2">
               {NAVIGATION_ITEMS.map((item) => {
                 const Icon = getIcon(item.id);
-                const isActive = currentPage === item.id;
+                const isActive = item.href ? isActiveRoute(item.href) : currentPage === item.id;
 
-                return (
+                return item.href ? (
+                  <Link key={item.id} to={item.href}>
+                    <Button
+                      variant={isActive ? "default" : "ghost"}
+                      size="default"
+                      className={cn(
+                        "flex flex-col items-center space-y-1.5 p-4 h-auto min-h-[60px] w-full",
+                        isActive
+                          ? "bg-primary text-primary-foreground"
+                          : "text-muted-foreground"
+                      )}
+                    >
+                      <Icon className="w-5 h-5" />
+                      <span className="text-xs sm:text-sm font-medium">{item.label}</span>
+                    </Button>
+                  </Link>
+                ) : (
                   <Button
                     key={item.id}
                     variant={isActive ? "default" : "ghost"}
@@ -175,9 +206,25 @@ export const Navigation: React.FC<NavigationProps> = ({
         <div className="flex justify-around">
           {NAVIGATION_ITEMS.slice(0, 5).map((item) => {
             const Icon = getIcon(item.id);
-            const isActive = currentPage === item.id;
+            const isActive = item.href ? isActiveRoute(item.href) : currentPage === item.id;
 
-            return (
+            return item.href ? (
+              <Link key={item.id} to={item.href} className="flex-1">
+                <Button
+                  variant="ghost"
+                  size="default"
+                  className={cn(
+                    "flex flex-col items-center space-y-1 px-2 py-2.5 h-auto min-h-[56px] min-w-0 w-full",
+                    isActive
+                      ? "text-primary"
+                      : "text-muted-foreground"
+                  )}
+                >
+                  <Icon className="w-5 h-5" />
+                  <span className="text-[10px] sm:text-xs font-medium truncate">{item.label.split(' ')[0]}</span>
+                </Button>
+              </Link>
+            ) : (
               <Button
                 key={item.id}
                 variant="ghost"

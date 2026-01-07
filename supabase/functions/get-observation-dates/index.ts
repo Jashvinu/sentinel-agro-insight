@@ -172,8 +172,12 @@ Deno.serve(async (req) => {
             console.log(`📊 Earth Engine returned ${availableDates.length} observations`);
 
             if (availableDates.length > 0) {
-              // Save to database
-              const observations = availableDates.map(obs => ({
+              // Filter out future dates before saving
+              const validDates = availableDates.filter(obs => obs.date <= todayStr);
+              console.log(`📅 Filtered ${availableDates.length - validDates.length} future dates (keeping ${validDates.length} valid dates)`);
+
+              // Save to database (only valid, non-future dates)
+              const observations = validDates.map(obs => ({
                 farm_id: farmId,
                 observation_date: obs.date,
                 cloud_cover_percentage: typeof obs.cloud_cover === 'number' ? obs.cloud_cover : null,

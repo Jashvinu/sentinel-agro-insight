@@ -18,6 +18,7 @@
     "supabase:start": "./scripts/supabase-local.sh",
     "supabase:stop": "supabase stop",
     "supabase:functions": "supabase functions serve",
+    "deploy:field-overview": "./scripts/deploy-field-overview.sh",
     "deploy:frontend": "./scripts/deploy-firebase.sh",
     "deploy:hosting": "npm run build && firebase deploy --only hosting",
     "firebase:deploy": "./scripts/deploy-firebase.sh",
