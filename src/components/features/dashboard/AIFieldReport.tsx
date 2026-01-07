@@ -5,9 +5,11 @@ import { Bot, Loader2, RefreshCw } from 'lucide-react';
 import { FIELD_BOUNDARIES } from '@/constants';
 import { DASHBOARD_INSIGHTS } from './DashboardKPIs';
 
-const GEMINI_API_KEY =
-    (import.meta.env?.VITE_GEMINI_API_KEY as string | undefined) ??
-    'AIzaSyA8ZnhK4bKe1qbFLQI72ZzBEBx34vOhH5s';
+const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
+
+if (!GEMINI_API_KEY) {
+    console.error('VITE_GEMINI_API_KEY is not defined in environment variables');
+}
 
 const DEFAULT_GEMINI_MODELS = ['gemini-1.5-flash', 'gemini-1.5-pro'];
 const DEFAULT_GEMINI_VERSIONS = ['v1'];

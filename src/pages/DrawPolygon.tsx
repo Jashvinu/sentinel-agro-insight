@@ -32,6 +32,7 @@ const DrawPolygon: React.FC<PolygonDrawingPageProps> = () => {
     const mapRef = useRef<HTMLDivElement>(null);
     const mapInstanceRef = useRef<google.maps.Map | null>(null);
     const drawingManagerRef = useRef<google.maps.drawing.DrawingManager | null>(null);
+    const polygonRef = useRef<google.maps.Polygon | null>(null);
     const autocompleteInputRef = useRef<HTMLInputElement>(null);
     const autocompleteRef = useRef<google.maps.places.Autocomplete | null>(null);
     const boundsListenerRef = useRef<google.maps.MapsEventListener | null>(null);
@@ -114,6 +115,7 @@ const DrawPolygon: React.FC<PolygonDrawingPageProps> = () => {
                     (event: google.maps.drawing.OverlayCompleteEvent) => {
                         if (event.type === google.maps.drawing.OverlayType.POLYGON) {
                             const polygon = event.overlay as google.maps.Polygon;
+                            polygonRef.current = polygon;
 
                             // Get polygon path and convert to coordinates
                             const path = polygon.getPath();
