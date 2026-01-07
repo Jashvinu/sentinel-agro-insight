@@ -33,7 +33,7 @@ import {
   Layers
 } from 'lucide-react';
 import L from 'leaflet';
-import { useToast } from '@/hooks/use-toast';
+import { useToast } from '@/hooks/useToast';
 import { bbox } from '@turf/turf';
 import { cn } from '@/lib/utils';
 import { API_ENDPOINTS } from '@/constants';

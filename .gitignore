@@ -24,3 +24,14 @@ dist-ssr
 *.sw?
 .vercel
 .env
+.env.local
+.env.production
+
+# Temporary files
+tmp_*.json
+test-api.ipynb
+
+# Credentials (exclude specific config files we need)
+*-credentials.json
+avid-infinity-*.json
+wrkfarm-*.json

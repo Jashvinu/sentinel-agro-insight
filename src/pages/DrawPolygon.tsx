@@ -13,7 +13,7 @@ import {
     DialogFooter,
 } from '@/components/ui/dialog';
 import { ArrowLeft, Save, MapPin, X, Search, Trash2, Plus } from 'lucide-react';
-import { useToast } from '@/hooks/use-toast';
+import { useToast } from '@/hooks/useToast';
 import { saveFarm, polygonsToFarmInsert } from '@/services/farmService';
 import { Badge } from '@/components/ui/badge';
 

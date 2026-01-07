@@ -4,7 +4,7 @@ import { DashboardKPIs } from '@/components/features/dashboard/DashboardKPIs';
 import { AIFieldReport } from '@/components/features/dashboard/AIFieldReport';
 import { WeatherSummary } from '@/components/features/dashboard/WeatherSummary';
 import { AlertsOverview } from '@/components/features/dashboard/AlertsOverview';
-import { FieldMap } from '@/components/features/map/field-map';
+import { FieldMap } from '@/components/features/map/FieldMap';
 import { AgriculturalIndices } from '@/components/features/dashboard/AgriculturalIndices';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';

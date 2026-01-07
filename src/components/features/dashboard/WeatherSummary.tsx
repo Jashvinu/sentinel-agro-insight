@@ -12,7 +12,7 @@ import {
   RefreshCw,
   Loader2
 } from 'lucide-react';
-import { useWeather } from '@/hooks/use-weather';
+import { useWeather } from '@/hooks/useWeather';
 
 
 export const WeatherSummary: React.FC = () => {

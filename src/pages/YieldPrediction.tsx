@@ -19,7 +19,7 @@ import { YieldPredictionInput, YieldPredictionResult } from '@/types';
 import { predictCropYield, getEvergreenFarmDummyData } from '@/services/yieldPredictionService';
 import { useAbeFarm } from '@/hooks/useAbeFarm';
 import { supabase } from '@/services/supabase';
-import { toast } from '@/hooks/use-toast';
+import { toast } from '@/hooks/useToast';
 
 const YieldPrediction = () => {
   const [currentPage, setCurrentPage] = useState('yield-prediction');

@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
 import { fetchWeatherApi } from 'openmeteo';
-import { useToast } from '@/hooks/use-toast';
+import { useToast } from '@/hooks/useToast';
 
 interface WeatherData {
   hourly: {
