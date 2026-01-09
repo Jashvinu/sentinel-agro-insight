@@ -11,6 +11,7 @@ import DrawPolygon from "./pages/DrawPolygon";
 import NotFound from "./pages/NotFound";
 import Login from "./pages/Login";
 import Signup from "./pages/Signup";
+import { AdvancedMonitoring } from "./pages/AdvancedMonitoring";
 import { useAutoSync } from "@/hooks/useAutoSync";
 import { ProtectedRoute } from "@/components/ProtectedRoute";
 
@@ -115,6 +116,14 @@ const AppContent = () => {
             element={
               <ProtectedRoute requireFarm={true}>
                 <YieldPrediction />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/advanced-monitoring"
+            element={
+              <ProtectedRoute requireFarm={true}>
+                <AdvancedMonitoring />
               </ProtectedRoute>
             }
           />

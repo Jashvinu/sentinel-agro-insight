@@ -36,21 +36,18 @@ export function ProtectedRoute({ children, requireFarm = false }: ProtectedRoute
         if (error) {
           // If error is about column not existing, check all farms (backward compatibility)
           if (error.message?.includes('column') || error.code === '42703') {
-            console.log('user_id column may not exist, checking all farms for backward compatibility');
             const { data: allFarms } = await supabase
               .from('farms')
               .select('id')
               .limit(1);
             setHasFarm(allFarms && allFarms.length > 0);
           } else {
-            console.error('Error checking farms:', error);
             setHasFarm(false);
           }
         } else {
           setHasFarm(data && data.length > 0);
         }
       } catch (error) {
-        console.error('Error checking farms:', error);
         // On error, allow access (backward compatibility)
         setHasFarm(true);
       } finally {

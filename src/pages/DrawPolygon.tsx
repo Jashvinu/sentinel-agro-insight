@@ -16,6 +16,7 @@ import { ArrowLeft, Save, MapPin, X, Search, Trash2, Plus } from 'lucide-react';
 import { useToast } from '@/hooks/useToast';
 import { saveFarm, polygonsToFarmInsert } from '@/services/farmService';
 import { Badge } from '@/components/ui/badge';
+import { MAP_DEFAULTS } from '@/constants';
 
 // Google Maps API Key - should be in environment variables
 const GOOGLE_MAPS_API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY || '';
@@ -76,7 +77,7 @@ const DrawPolygon: React.FC<PolygonDrawingPageProps> = () => {
 
                 // Create map
                 const map = new google.maps.Map(mapRef.current!, {
-                    center: { lat: 40.749933, lng: -73.98633 }, // Default center like sample
+                    center: MAP_DEFAULTS.NYC_CENTER,
                     zoom: 13,
                     mapTypeId: 'satellite',
                     streetViewControl: false,
@@ -165,7 +166,6 @@ const DrawPolygon: React.FC<PolygonDrawingPageProps> = () => {
 
                 setIsMapLoaded(true);
             } catch (error) {
-                console.error('Error loading Google Maps:', error);
                 toast({
                     title: 'Error Loading Map',
                     description: 'Failed to load Google Maps. Please check your API key and try again.',
@@ -259,20 +259,12 @@ const DrawPolygon: React.FC<PolygonDrawingPageProps> = () => {
                         latLng = new google.maps.LatLng(loc.lat, loc.lng);
                     }
 
-                    console.log('Navigating to place:', {
-                        name: place.name,
-                        location: `${latLng.lat()}, ${latLng.lng()}`,
-                        hasViewport: !!place.geometry!.viewport
-                    });
-
                     // Navigate exactly like the sample: fitBounds if viewport exists, else setCenter + setZoom(17)
                     if (place.geometry!.viewport) {
                         // If the place has a viewport, fit it to the map (like sample)
-                        console.log('Fitting bounds to viewport');
                         map.fitBounds(place.geometry!.viewport!);
                     } else {
                         // Otherwise, center on the location with zoom 17 (exactly like sample)
-                        console.log('Setting center and zoom to 17');
                         map.setCenter(latLng);
                         map.setZoom(17);
                     }
@@ -290,7 +282,6 @@ const DrawPolygon: React.FC<PolygonDrawingPageProps> = () => {
 
                 return placeListener;
             } catch (error) {
-                console.error('Error initializing Places Autocomplete:', error);
                 toast({
                     title: 'Error Initializing Search',
                     description: 'Failed to initialize location search. Please refresh the page.',
@@ -413,7 +404,6 @@ const DrawPolygon: React.FC<PolygonDrawingPageProps> = () => {
 
             if (saveError || !savedFarm) {
                 const errorMessage = saveError?.message || 'Failed to save farm to database';
-                console.error('Error saving farm:', saveError);
                 toast({
                     title: 'Error Saving Farm',
                     description: errorMessage,
@@ -430,7 +420,6 @@ const DrawPolygon: React.FC<PolygonDrawingPageProps> = () => {
             // Navigate back to main page
             navigate('/');
         } catch (error) {
-            console.error('Error saving farm:', error);
             toast({
                 title: 'Error Saving Farm',
                 description: error instanceof Error ? error.message : 'Failed to save farm to database.',

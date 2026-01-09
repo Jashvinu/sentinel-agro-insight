@@ -3,6 +3,7 @@ import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { getIndexDisplayName } from '@/utils';
+import { buildApiUrl, getSupabaseFunctionHeaders } from '@/services/api';
 
 interface TimelineData {
   farm: {
@@ -41,8 +42,11 @@ export function FarmTimeline({ farmId = 'df43eedf-850d-454c-9fbf-36a052be10c0', 
         setLoading(true);
         setError(null);
         
-        const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:54321/functions/v1';
-        const response = await fetch(`${API_BASE}/farm-timeline?farm_id=${farmId}`);
+        const endpoint = buildApiUrl(`farm-timeline?farm_id=${farmId}`);
+        const headers = getSupabaseFunctionHeaders();
+        const response = await fetch(endpoint, {
+          headers: Object.keys(headers).length > 0 ? headers : undefined
+        });
         
         if (!response.ok) {
           throw new Error(`Failed to fetch timeline: ${response.statusText}`);

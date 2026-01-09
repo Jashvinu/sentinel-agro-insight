@@ -65,7 +65,7 @@ const YieldPrediction = () => {
         await fetchFieldData(geometryStr, id);
       }
     } catch (error) {
-      console.error('Error loading farm geometry:', error);
+      // Error loading farm geometry
     }
   };
 
@@ -131,7 +131,7 @@ const YieldPrediction = () => {
         });
       }
     } catch (error) {
-      console.error('Error fetching field data:', error);
+      // Error fetching field data
     } finally {
       setFetchingData(false);
     }
@@ -175,7 +175,6 @@ const YieldPrediction = () => {
         description: `Predicted yield: ${result.predictedYield.toFixed(2)} Mg/ha`,
       });
     } catch (error: any) {
-      console.error('Prediction error:', error);
       toast({
         title: 'Prediction Failed',
         description: error.message || 'An error occurred during prediction.',

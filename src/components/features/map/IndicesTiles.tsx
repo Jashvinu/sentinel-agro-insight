@@ -3,7 +3,7 @@ import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
-import { getSupabaseFunctionHeaders } from '@/services/api';
+import { buildApiUrl, getSupabaseFunctionHeaders } from '@/services/api';
 import {
   Leaf,
   Droplets,
@@ -162,9 +162,9 @@ export function IndicesTiles({
         setLoading(true);
         setError(null);
 
-        const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:54321/functions/v1';
+        const endpoint = buildApiUrl(`farm-timeline?farm_id=${farmId}`);
         const headers = getSupabaseFunctionHeaders();
-        const response = await fetch(`${API_BASE}/farm-timeline?farm_id=${farmId}`, {
+        const response = await fetch(endpoint, {
           headers: Object.keys(headers).length > 0 ? headers : undefined
         });
 

@@ -2,15 +2,15 @@ import { API_ENDPOINTS, ERROR_MESSAGES } from '@/constants';
 import { ApiResponse, ApiError, EarthEngineResponse } from '@/types';
 import { retry } from '@/utils';
 
-const DEFAULT_LOCAL_API_BASE_URL = 'http://127.0.0.1:3000';
+const DEFAULT_LOCAL_API_BASE_URL = 'http://127.0.0.1:3001';
 const VALID_PROTOCOLS = new Set(['http:', 'https:']);
 const URL_MATCHER = /^https?:\/\//i;
 
 const stripTrailingSlash = (value: string): string => value.replace(/\/+$/, '');
 
 const resolveApiBaseUrl = (): string => {
+    // Priority 1: Use VITE_API_BASE_URL if set (this should point to Supabase)
     const envValue = import.meta.env.VITE_API_BASE_URL?.trim();
-
     if (envValue) {
         try {
             const parsed = new URL(envValue);
@@ -26,12 +26,17 @@ const resolveApiBaseUrl = (): string => {
         }
     }
 
-    if (typeof window !== 'undefined') {
-        const { hostname } = window.location;
-        if (hostname === 'localhost' || hostname === '127.0.0.1') {
-            return DEFAULT_LOCAL_API_BASE_URL;
-        }
+    // Priority 2: Fallback to Supabase URL (from VITE_SUPABASE_URL)
+    const supabaseUrl = import.meta.env.VITE_SUPABASE_URL?.trim();
+    if (supabaseUrl) {
+        // Construct Supabase Edge Functions URL
+        const functionsUrl = `${supabaseUrl}/functions/v1`;
+        console.log('[ApiService] Using Supabase Edge Functions:', functionsUrl);
+        return functionsUrl;
+    }
 
+    // Priority 3: Fallback to window origin or default Supabase
+    if (typeof window !== 'undefined') {
         const fallback = stripTrailingSlash(`${window.location.protocol}//${window.location.host}`);
         console.warn(
             `[ApiService] VITE_API_BASE_URL not set. Using window origin "${fallback}". ` +
@@ -40,7 +45,8 @@ const resolveApiBaseUrl = (): string => {
         return fallback;
     }
 
-    return DEFAULT_LOCAL_API_BASE_URL;
+    // Final fallback: default Supabase URL
+    return 'https://udbnskydigoqpxmmduvr.supabase.co/functions/v1';
 };
 
 export const API_BASE_URL = resolveApiBaseUrl();
@@ -60,6 +66,24 @@ export const getSupabaseFunctionHeaders = (): Record<string, string> => {
 };
 
 export const buildApiUrl = (path = ''): string => {
+    // Special handling for advanced-monitoring: use local server in development
+    // All other endpoints use Supabase Edge Functions
+    const isAdvancedMonitoring = path === '/advanced-monitoring' || 
+                                 path === 'advanced-monitoring' || 
+                                 path.includes('advanced-monitoring');
+    
+    if (isAdvancedMonitoring) {
+        if (typeof window !== 'undefined') {
+            const { hostname } = window.location;
+            if (hostname === 'localhost' || hostname === '127.0.0.1' || import.meta.env.DEV) {
+                const localUrl = `${DEFAULT_LOCAL_API_BASE_URL}/advanced-monitoring`;
+                console.log('[ApiService] Using local server for advanced-monitoring:', localUrl);
+                return localUrl;
+            }
+        }
+    }
+
+    // For all other endpoints, use Supabase Edge Functions
     if (!path) {
         return API_BASE_URL;
     }

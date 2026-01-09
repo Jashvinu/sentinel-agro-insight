@@ -561,3 +561,16 @@ export function geoJsonToEarthEngine(geometry: {
   }
 }
 
+/**
+ * Evaluate Earth Engine object using callback-based approach
+ * This avoids the "Deno.openSync is blocklisted" error in Supabase Edge Functions
+ * Use this instead of .getInfo()
+ */
+export function evaluate(obj: any): Promise<any> {
+  return new Promise((resolve, reject) =>
+    obj.evaluate((result: any, error: any) =>
+      error ? reject(new Error(error)) : resolve(result)
+    )
+  );
+}
+

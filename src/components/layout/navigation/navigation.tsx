@@ -55,6 +55,7 @@ export const Navigation: React.FC<NavigationProps> = ({
     const iconMap = {
       dashboard: Home,
       'yield-prediction': TrendingUp,
+      'advanced-monitoring': Activity,
     };
     return iconMap[id as keyof typeof iconMap] || Home;
   };

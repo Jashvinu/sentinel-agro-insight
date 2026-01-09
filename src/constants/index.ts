@@ -385,6 +385,11 @@ export const NAVIGATION_ITEMS = [
         label: 'Yield Prediction',
         href: '/yield-prediction',
     },
+    {
+        id: 'advanced-monitoring',
+        label: 'Advanced Monitoring',
+        href: '/advanced-monitoring',
+    },
 ] as const;
 
 // Data Sources
@@ -466,5 +471,87 @@ export const VALIDATION_RULES = {
             max: 180,
             message: 'Longitude must be between -180 and 180.',
         },
+    },
+} as const;
+
+// Cache Duration
+export const CACHE_DURATION = {
+    WATER_METRICS: 14 * 24 * 60 * 60 * 1000, // 14 days
+    SATELLITE_DATA: 60 * 60 * 1000, // 1 hour
+    WEATHER_DATA: 5 * 60 * 1000, // 5 minutes
+    MIN_LOADING_TIME: 300, // ms
+} as const;
+
+// Map Defaults
+export const MAP_DEFAULTS = {
+    CENTER: { lat: 12.9716, lng: 77.5946 }, // Bangalore
+    ZOOM: 15,
+    NYC_CENTER: { lat: 40.749933, lng: -73.98633 },
+} as const;
+
+// API Configuration
+export const API_CONFIG = {
+    RETRY_ATTEMPTS: 3,
+    RETRY_DELAY: 1000,
+    TIMEOUT: 30000,
+} as const;
+
+// Advanced Monitoring Algorithm Configurations
+export const ALGORITHM_CONFIGS = {
+    optram_moisture: {
+        id: 'optram_moisture' as const,
+        label: 'OPTRAM Soil Moisture',
+        description: 'Optical Trapezoid Model moisture estimation',
+        unit: '%',
+        category: 'moisture' as const,
+        color: '#3b82f6', // blue-500
+    },
+    sar_moisture_change: {
+        id: 'sar_moisture_change' as const,
+        label: 'SAR Moisture Change',
+        description: 'Sentinel-1 change detection',
+        unit: 'ΔdB',
+        category: 'moisture' as const,
+        color: '#8b5cf6', // violet-500
+    },
+    sar_moisture_fusion: {
+        id: 'sar_moisture_fusion' as const,
+        label: 'Fused Moisture',
+        description: 'Optical + SAR fusion',
+        unit: '%',
+        category: 'moisture' as const,
+        color: '#06b6d4', // cyan-500
+    },
+    pca_phosphorus: {
+        id: 'pca_phosphorus' as const,
+        label: 'Phosphorus Index',
+        description: 'PCA-based P estimation',
+        unit: 'Index',
+        category: 'nutrients' as const,
+        color: '#f59e0b', // amber-500
+    },
+    pca_potassium: {
+        id: 'pca_potassium' as const,
+        label: 'Potassium Index',
+        description: 'PCA-based K estimation',
+        unit: 'Index',
+        category: 'nutrients' as const,
+        color: '#ec4899', // pink-500
+    },
+    nitrogen_gndvi: {
+        id: 'nitrogen_gndvi' as const,
+        label: 'Nitrogen (GNDVI)',
+        description: 'Green NDVI nitrogen proxy',
+        unit: 'Index',
+        category: 'nutrients' as const,
+        color: '#10b981', // emerald-500
+    },
+    nitrogen_ndre: {
+        id: 'nitrogen_ndre' as const,
+        label: 'Nitrogen (NDRE)',
+        description: 'RedEdge nitrogen estimation',
+        unit: 'Index',
+        category: 'nutrients' as const,
+        color: '#84cc16', // lime-500
     },
 } as const; 

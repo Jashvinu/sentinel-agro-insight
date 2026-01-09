@@ -40,14 +40,12 @@ const loadFromCache = (farmId: string): DateObservation[] | null => {
       const CACHE_TTL = 2 * 60 * 1000; // 2 minutes
 
       if (cacheAge > CACHE_TTL) {
-        console.log(`[DateTimeline] Cache is stale (${Math.round(cacheAge / 1000 / 60)} minutes old), will refresh`);
         return null; // Return null to force refresh
       }
 
       return data as DateObservation[];
     }
   } catch (err) {
-    console.warn('[DateTimeline] Failed to load from cache:', err);
   }
   return null;
 };
@@ -60,7 +58,6 @@ const saveToCache = (farmId: string, data: DateObservation[]) => {
       timestamp: Date.now()
     }));
   } catch (err) {
-    console.warn('[DateTimeline] Failed to save to cache:', err);
   }
 };
 
@@ -96,13 +93,11 @@ function DateTimelineComponent({
   // Guard: Never allow loading state to be true if we have observations
   useEffect(() => {
     if (observations.length > 0 && loading) {
-      console.log('[DateTimeline] Guard: Preventing loading state when observations exist');
       setLoading(false);
     }
 
     // Guard: If state somehow got cleared but we have ref data, restore it
     if (observations.length === 0 && observationsRef.current.length > 0 && loadedFarmIdRef.current === farmId) {
-      console.log('[DateTimeline] Guard: Restoring observations from ref');
       setObservations(observationsRef.current);
       setLoading(false);
     }
@@ -121,7 +116,6 @@ function DateTimelineComponent({
 
       // Skip if we've already loaded this farm and have observations
       if (loadedFarmIdRef.current === farmId && observations.length > 0) {
-        console.log('[DateTimeline] Already loaded for this farm, skipping');
         // Ensure loading is false if we have data
         setLoading(false);
         initializedRef.current = true;
@@ -130,7 +124,6 @@ function DateTimelineComponent({
 
       // Guard: If we have observations for this farm, don't fetch again
       if (observations.length > 0 && loadedFarmIdRef.current === farmId) {
-        console.log('[DateTimeline] Guard: Already have observations, skipping fetch');
         setLoading(false);
         return;
       }
@@ -138,7 +131,6 @@ function DateTimelineComponent({
       // Check cache first
       const cachedObservations = loadFromCache(farmId);
       if (cachedObservations && cachedObservations.length > 0) {
-        console.log('[DateTimeline] Loading from session cache');
         observationsRef.current = cachedObservations; // Update ref immediately
         setObservations(cachedObservations);
         setLoading(false);
@@ -155,7 +147,6 @@ function DateTimelineComponent({
         // Refresh in background to get latest data (non-blocking)
         // This will update the state automatically when new dates are found
         fetchObservationsFromAPI(true).catch(err => {
-          console.warn('[DateTimeline] Background refresh failed:', err);
           // Don't show error, just log it
         });
 
@@ -169,7 +160,6 @@ function DateTimelineComponent({
     async function fetchObservationsFromAPI(isBackgroundRefresh: boolean = false) {
       // Guard: Don't fetch if we already have observations for this farm (unless it's a background refresh)
       if (!isBackgroundRefresh && observations.length > 0 && loadedFarmIdRef.current === farmId) {
-        console.log('[DateTimeline] Guard: Skipping API fetch, already have observations');
         setLoading(false);
         return;
       }
@@ -186,7 +176,6 @@ function DateTimelineComponent({
         const endpoint = buildApiUrl(`get-observation-dates?farm_id=${farmId}${isBackgroundRefresh ? '&force_refresh=true' : ''}`);
         const headers = getSupabaseFunctionHeaders();
 
-        console.log('[DateTimeline] Fetching observations from:', endpoint);
 
         let response: Response;
         try {
@@ -300,11 +289,8 @@ function DateTimelineComponent({
         // Log if background refresh found new dates or updated existing ones
         if (isBackgroundRefresh) {
           if (newDates.length > 0) {
-            console.log(`[DateTimeline] ✨ Background refresh found ${newDates.length} new date(s):`, newDates.map(d => d.observation_date));
           } else if (obs.length > observations.length) {
-            console.log(`[DateTimeline] 📈 Background refresh: Updated from ${observations.length} to ${obs.length} dates`);
           } else if (obs.length !== observations.length || JSON.stringify(obs) !== JSON.stringify(observations)) {
-            console.log(`[DateTimeline] 🔄 Background refresh: Updated date list (${obs.length} dates)`);
           }
         }
 
@@ -379,8 +365,6 @@ function DateTimelineComponent({
       onDateSelect(date, observation);
     } else {
       // Date not found in observations - don't allow selection
-      console.warn(`[DateTimeline] Date ${date} not found in observations. Available dates:`,
-        currentObs.map(o => o.observation_date).slice(0, 5));
       // Don't call onDateSelect for invalid dates
       return;
     }
@@ -564,7 +548,6 @@ export const DateTimeline = React.memo(DateTimelineComponent, (prevProps, nextPr
   const farmIdChanged = prevProps.farmId !== nextProps.farmId;
 
   if (farmIdChanged) {
-    console.log('[DateTimeline] farmId changed, allowing re-render');
     return false; // Re-render needed
   }
 

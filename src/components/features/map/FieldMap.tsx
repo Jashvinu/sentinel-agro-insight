@@ -36,11 +36,14 @@ import L from 'leaflet';
 import { useToast } from '@/hooks/useToast';
 import { bbox } from '@turf/turf';
 import { cn } from '@/lib/utils';
-import { API_ENDPOINTS } from '@/constants';
+import { API_ENDPOINTS, CACHE_DURATION } from '@/constants';
 import { API_BASE_URL, buildApiUrl, getSupabaseFunctionHeaders } from '@/services/api';
 import { getAllFarms, updateFarmName, deleteFarm } from '@/services/farmService';
 import { DateTimeline, type DateObservation } from './DateTimeline';
 import { IndicesTiles } from './IndicesTiles';
+import { MapLegend } from './MapLegend';
+import { MapDataSummary } from './MapDataSummary';
+import { getIndexUnit } from './mapUtils';
 
 interface SatelliteLayer {
   satellite: string;
@@ -139,7 +142,6 @@ export const FieldMap: React.FC<FieldMapProps> = ({
   const [earthEngineData, setEarthEngineData] = useState<EarthEngineData | null>(null);
   const [loading, setLoading] = useState(false);
   const loadingStartTimeRef = useRef<number | null>(null);
-  const MIN_LOADING_TIME = 300; // Minimum loading time in ms for better UX
 
   // Helper to set loading with minimum duration for better UX
   const setLoadingWithMinDuration = useCallback((isLoading: boolean) => {
@@ -148,7 +150,7 @@ export const FieldMap: React.FC<FieldMapProps> = ({
       setLoading(true);
     } else {
       const elapsed = loadingStartTimeRef.current ? Date.now() - loadingStartTimeRef.current : 0;
-      const remaining = Math.max(0, MIN_LOADING_TIME - elapsed);
+      const remaining = Math.max(0, CACHE_DURATION.MIN_LOADING_TIME - elapsed);
       setTimeout(() => {
         setLoading(false);
         loadingStartTimeRef.current = null;
@@ -183,8 +185,6 @@ export const FieldMap: React.FC<FieldMapProps> = ({
       return;
     }
 
-    console.log(`🎯 Index selected: ${normalizedIndex}`);
-    console.log(`🚫 Cache disabled - will fetch fresh from Supabase`);
     setSelectedIndex(normalizedIndex);
     setSelectedSatellite('combined');
     setLoadingWithMinDuration(true);
@@ -242,7 +242,6 @@ export const FieldMap: React.FC<FieldMapProps> = ({
   const fetchEarthEngineData = useCallback(async () => {
     // Check if data is already cached for this index
     if (mapCache[selectedIndex]) {
-      console.log(`Using cached data for ${selectedIndex}`);
       setEarthEngineData(mapCache[selectedIndex]);
       setSelectedSatellite('combined');
       return;
@@ -252,7 +251,6 @@ export const FieldMap: React.FC<FieldMapProps> = ({
     try {
       // Require API base URL via env to avoid mismatched origins (Firebase vs Supabase Edge Functions)
       const apiBase = API_BASE_URL;
-      console.log('[FieldMap] API base:', apiBase);
       // Quick health check to provide clearer errors
       try {
         const headers = getSupabaseFunctionHeaders();
@@ -269,7 +267,6 @@ export const FieldMap: React.FC<FieldMapProps> = ({
       }
       // Fetch data from the server with the selected index
       const requestUrl = buildApiUrl(`${API_ENDPOINTS.agriculturalIndices}?index=${selectedIndex}`);
-      console.log('[FieldMap] Fetching:', requestUrl);
       const headers = getSupabaseFunctionHeaders();
       const response = await fetch(requestUrl, {
         headers: Object.keys(headers).length > 0 ? headers : undefined
@@ -431,9 +428,13 @@ export const FieldMap: React.FC<FieldMapProps> = ({
         const endDate = new Date(date);
         endDate.setDate(endDate.getDate() + 2); // 2 days after
 
-        apiUrl += `&start=${startDate.toISOString().split('T')[0]}&end=${endDate.toISOString().split('T')[0]}`;
+        // Cap end date to today to prevent future date requests
+        const today = new Date();
+        const todayStr = today.toISOString().split('T')[0];
+        const endDateStr = endDate.toISOString().split('T')[0];
+        const finalEndDate = endDateStr > todayStr ? todayStr : endDateStr;
 
-        console.log(`📅 Fetching data for selected date: ${selectedDate}`);
+        apiUrl += `&start=${startDate.toISOString().split('T')[0]}&end=${finalEndDate}`;
       }
 
       // Send polygon to API and fetch indices
@@ -565,22 +566,15 @@ export const FieldMap: React.FC<FieldMapProps> = ({
 
   // Refresh map data when selected index or date changes
   useEffect(() => {
-    console.log(`🔄 Index changed to: ${selectedIndex}`);
-    console.log(`📍 Selected farm ID: ${selectedFarmId}`);
-    console.log(`📅 Selected date: ${selectedDate || 'latest'}`);
-    console.log(`🚫 CACHE DISABLED - Always fetching fresh from Supabase`);
-
     setLoadingWithMinDuration(true);
 
     // If a farm is selected, fetch its indices
     if (selectedFarmId) {
       const farm = savedPolygons.find(p => p.id === selectedFarmId);
       if (farm) {
-        console.log(`📡 Fetching ${selectedIndex} for farm: ${farm.name || selectedFarmId}${selectedDate ? ` on ${selectedDate}` : ''}`);
         fetchIndicesForPolygon(farm.geojson, selectedFarmId);
       }
     } else {
-      console.log(`📡 Fetching ${selectedIndex} (no specific farm)`);
       fetchEarthEngineData();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -652,90 +646,6 @@ export const FieldMap: React.FC<FieldMapProps> = ({
     }
   };
 
-  const getLegendInfo = (index: string) => {
-    switch (index) {
-      case 'nitrogen':
-        return 'Nitrogen Content (kg N/ha)';
-      case 'phosphorus':
-        return 'Phosphorus Content (kg P₂O₅/ha)';
-      case 'potassium':
-        return 'Potassium Content (kg K₂O/ha)';
-      case 'salinity':
-        return 'Electrical Conductivity (dS/m)';
-      case 'ph':
-        return 'Soil pH';
-      case 'moisture':
-      case 'sar_moisture':
-        return 'Volumetric Moisture (%)';
-      case 'carbon':
-        return 'Soil Organic Carbon (%)';
-      case 'ndvi':
-      case 'evi':
-      case 'savi':
-      case 'msavi':
-        return 'Vegetation Index (0-1)';
-      case 'ndwi':
-        return 'Water Index (-1 to 1)';
-      default:
-        return 'Index Values';
-    }
-  };
-
-  const getLegendColors = (index: string) => {
-    switch (index) {
-      case 'nitrogen':
-      case 'phosphorus':
-      case 'potassium':
-        return ['#ef4444', '#f97316', '#eab308', '#22c55e', '#15803d'];
-      case 'salinity':
-        return ['#22c55e', '#eab308', '#f97316', '#ef4444', '#7f1d1d'];
-      case 'ph':
-        return ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6'];
-      case 'moisture':
-      case 'sar_moisture':
-        return ['#92400e', '#eab308', '#93c5fd', '#3b82f6', '#1e40af'];
-      case 'carbon':
-        return ['#92400e', '#eab308', '#f97316', '#22c55e', '#15803d'];
-      case 'ndvi':
-      case 'evi':
-      case 'savi':
-      case 'msavi':
-        return ['#ef4444', '#f97316', '#eab308', '#22c55e', '#15803d'];
-      case 'ndwi':
-        return ['#ef4444', '#f97316', '#3b82f6', '#1e40af'];
-      default:
-        return ['#92400e', '#eab308', '#22c55e'];
-    }
-  };
-
-  const getLegendLabels = (index: string) => {
-    switch (index) {
-      case 'nitrogen':
-        return ['0', '75', '150', '225', '300+'];
-      case 'phosphorus':
-        return ['0', '50', '100', '150', '200+'];
-      case 'potassium':
-        return ['0', '62', '125', '187', '250+'];
-      case 'salinity':
-        return ['0', '4', '8', '12', '16+'];
-      case 'ph':
-        return ['4.5', '5.6', '6.7', '7.8', '9.0'];
-      case 'moisture':
-      case 'sar_moisture':
-        return ['0%', '12%', '25%', '37%', '50%+'];
-      case 'carbon':
-        return ['0%', '2.5%', '5%', '7.5%', '10%+'];
-      case 'ndvi':
-      case 'evi':
-      case 'savi':
-      case 'msavi':
-        return ['0', '0.25', '0.5', '0.75', '1.0'];
-      case 'ndwi':
-        return ['-1', '-0.5', '0.5', '1.0'];
-      default:
-        return ['Low', 'Medium', 'High'];
-    }
-  };
 
   // Filter polygons based on search query
   const filteredPolygons = useMemo(() => {
@@ -1467,62 +1377,14 @@ export const FieldMap: React.FC<FieldMapProps> = ({
         </div>
 
         {/* Color Legend */}
-        <div className="p-4 bg-muted/10 border-t border-border/30">
-          <div className="flex flex-col items-center space-y-3">
-            <div className="text-sm font-medium text-muted-foreground">
-              {getLegendInfo(selectedIndex)}
-            </div>
-            <div className="flex items-center space-x-2">
-              {getLegendColors(selectedIndex).map((color, index) => (
-                <div key={index} className="flex flex-col items-center space-y-1">
-                  <div
-                    className="w-6 h-4 rounded border border-border"
-                    style={{ backgroundColor: color }}
-                  ></div>
-                  <span className="text-xs text-muted-foreground">
-                    {getLegendLabels(selectedIndex)[index]}
-                  </span>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
+        <MapLegend selectedIndex={selectedIndex} />
 
         {/* Data Summary */}
-        {activeLayer && (
-          <div className="p-4 bg-muted/20 border-t border-border/50">
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <div className="text-center">
-                <div className="text-2xl font-bold text-success">
-                  {typeof activeLayer.cloudCover === 'number'
-                    ? `${activeLayer.cloudCover.toFixed(1)}%`
-                    : '—'}
-                </div>
-                <div className="text-xs text-muted-foreground">Cloud Cover</div>
-              </div>
-              <div className="text-center">
-                <div className="text-2xl font-bold text-primary">
-                  {selectedIndex.toUpperCase()}
-                </div>
-                <div className="text-xs text-muted-foreground">
-                  {activeLayer.satellite === 'Combined' ? 'All Satellites' : activeLayer.satellite}
-                </div>
-              </div>
-              <div className="text-center">
-                <div className="text-2xl font-bold text-warning">
-                  {earthEngineData?.date ? new Date(earthEngineData.date).toLocaleDateString() : '—'}
-                </div>
-                <div className="text-xs text-muted-foreground">Data Date</div>
-              </div>
-              <div className="text-center">
-                <div className="text-2xl font-bold text-accent">
-                  Real-time
-                </div>
-                <div className="text-xs text-muted-foreground">Update</div>
-              </div>
-            </div>
-          </div>
-        )}
+        <MapDataSummary
+          activeLayer={activeLayer}
+          selectedIndex={selectedIndex}
+          dataDate={earthEngineData?.date}
+        />
       </CardContent>
 
       {/* Date Timeline - Scrollable date selector */}
@@ -1551,7 +1413,6 @@ export const FieldMap: React.FC<FieldMapProps> = ({
             } else {
               setAllowedIndices([...ALL_SUPPORTED_INDICES]);
             }
-            console.log('Selected date:', date);
           }}
         />
       </div>
@@ -1563,7 +1424,6 @@ export const FieldMap: React.FC<FieldMapProps> = ({
           selectedDate={selectedDate}
           allowedIndices={allowedIndices}
           onIndexSelect={(indexType) => {
-            console.log('Index selected:', indexType);
             handleIndexSelection(indexType);
           }}
         />

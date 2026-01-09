@@ -13,14 +13,14 @@ import {
   Loader2
 } from 'lucide-react';
 import { useWeather } from '@/hooks/useWeather';
+import { MAP_DEFAULTS } from '@/constants';
 
 
 export const WeatherSummary: React.FC = () => {
   const { data, loading, error, fetchWeather } = useWeather();
 
   // Default location (Bangalore coordinates for agriculture demo)
-  const defaultLatitude = 12.9716;
-  const defaultLongitude = 77.5946;
+  const { lat: defaultLatitude, lng: defaultLongitude } = MAP_DEFAULTS.CENTER;
 
   useEffect(() => {
     fetchWeather(defaultLatitude, defaultLongitude);
