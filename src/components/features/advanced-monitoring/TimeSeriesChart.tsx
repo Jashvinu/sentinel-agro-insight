@@ -12,7 +12,7 @@ import {
 } from 'recharts';
 import { Loader2 } from 'lucide-react';
 import type { AlgorithmTimeSeries, ChartDataPoint } from '@/types/advancedMonitoring';
-import { ALGORITHM_CONFIGS } from '@/constants';
+import { ALGORITHM_CONFIGS, TIMESERIES_ALGORITHM_COLORS } from '@/constants';
 
 interface TimeSeriesChartProps {
     timeseries: AlgorithmTimeSeries[];
@@ -72,7 +72,11 @@ const CustomTooltip = ({ active, payload, label }: TooltipProps<number, string>)
             <div className="space-y-1">
                 {payload.map((entry, index) => {
                     const algorithmId = entry.dataKey as string;
-                    const config = ALGORITHM_CONFIGS[algorithmId as keyof typeof ALGORITHM_CONFIGS];
+                    const config = ALGORITHM_CONFIGS[algorithmId as keyof typeof ALGORITHM_CONFIGS] || {
+                        label: algorithmId.toUpperCase(),
+                        unit: getIndexUnit(algorithmId),
+                        color: TIMESERIES_ALGORITHM_COLORS[algorithmId] || '#6b7280'
+                    };
 
                     if (!config) return null;
 
@@ -198,3 +202,27 @@ export const TimeSeriesChart: React.FC<TimeSeriesChartProps> = ({ timeseries, lo
         </div>
     );
 };
+
+/**
+ * Get unit for agricultural index
+ * Helper function for fallback config when algorithm not in ALGORITHM_CONFIGS
+ */
+function getIndexUnit(algorithm: string): string {
+    const units: Record<string, string> = {
+        // Vegetation indices
+        ndvi: 'Index',
+        evi: 'Index',
+        savi: 'Index',
+        msavi: 'Index',
+        gndvi: 'Index',
+        ndre: 'Index',
+        // NPK nutrients
+        nitrogen: 'kg N/ha',
+        phosphorus: 'kg P₂O₅/ha',
+        potassium: 'kg K₂O/ha',
+        // Water indices
+        ndwi: 'Index',
+        moisture: '%',
+    };
+    return units[algorithm] || '';
+}

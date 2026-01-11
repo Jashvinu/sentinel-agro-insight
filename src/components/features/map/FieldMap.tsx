@@ -30,7 +30,8 @@ import {
   X,
   Edit2,
   Trash2,
-  Layers
+  Layers,
+  TrendingUp
 } from 'lucide-react';
 import L from 'leaflet';
 import { useToast } from '@/hooks/useToast';
@@ -41,6 +42,7 @@ import { API_BASE_URL, buildApiUrl, getSupabaseFunctionHeaders } from '@/service
 import { getAllFarms, updateFarmName, deleteFarm } from '@/services/farmService';
 import { DateTimeline, type DateObservation } from './DateTimeline';
 import { IndicesTiles } from './IndicesTiles';
+import { TimeSeriesPanel } from './TimeSeriesPanel';
 import { MapLegend } from './MapLegend';
 import { MapDataSummary } from './MapDataSummary';
 import { getIndexUnit } from './mapUtils';
@@ -124,6 +126,8 @@ const ALL_SUPPORTED_INDICES = [
   'evi',
   'savi',
   'msavi',
+  'gndvi',
+  'ndre',
   'ndwi',
   'nitrogen',
   'phosphorus',
@@ -168,6 +172,7 @@ export const FieldMap: React.FC<FieldMapProps> = ({
   const [polygonSearchQuery, setPolygonSearchQuery] = useState('');
   const [showPolygonManager, setShowPolygonManager] = useState(false);
   const [editingPolygonId, setEditingPolygonId] = useState<string | null>(null);
+  const [showTimeSeriesPanel, setShowTimeSeriesPanel] = useState(false);
   const [editPolygonName, setEditPolygonName] = useState('');
   const { toast } = useToast();
 
@@ -638,6 +643,8 @@ export const FieldMap: React.FC<FieldMapProps> = ({
       case 'evi':
       case 'savi':
       case 'msavi':
+      case 'gndvi':
+      case 'ndre':
         return '';
       case 'ndwi':
         return '';
@@ -1119,6 +1126,34 @@ export const FieldMap: React.FC<FieldMapProps> = ({
                   <Leaf className="w-3 h-3 mr-1" />
                   MSAVI
                 </Button>
+                <Button
+                  variant={selectedIndex === 'gndvi' ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => handleIndexSelection('gndvi')}
+                  disabled={loading}
+                  className="text-xs px-2 py-1"
+                  style={{
+                    backgroundColor: selectedIndex === 'gndvi' ? '#10b981' : undefined,
+                    borderColor: selectedIndex === 'gndvi' ? '#10b981' : undefined
+                  }}
+                >
+                  <Leaf className="w-3 h-3 mr-1" />
+                  GNDVI
+                </Button>
+                <Button
+                  variant={selectedIndex === 'ndre' ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => handleIndexSelection('ndre')}
+                  disabled={loading}
+                  className="text-xs px-2 py-1"
+                  style={{
+                    backgroundColor: selectedIndex === 'ndre' ? '#f59e0b' : undefined,
+                    borderColor: selectedIndex === 'ndre' ? '#f59e0b' : undefined
+                  }}
+                >
+                  <Leaf className="w-3 h-3 mr-1" />
+                  NDRE
+                </Button>
               </div>
 
               {/* Water Section */}
@@ -1386,6 +1421,38 @@ export const FieldMap: React.FC<FieldMapProps> = ({
           dataDate={earthEngineData?.date}
         />
       </CardContent>
+
+      {/* Historical Trends Panel */}
+      {selectedFarmId && (
+        <div className="border-t border-border/30">
+          <button
+            onClick={() => setShowTimeSeriesPanel(!showTimeSeriesPanel)}
+            className="w-full px-6 py-3 flex items-center justify-between hover:bg-muted/50 transition-colors"
+          >
+            <div className="flex items-center space-x-2">
+              <TrendingUp className="w-4 h-4 text-primary" />
+              <span className="font-semibold text-sm">
+                Historical Trends - {selectedIndex.toUpperCase()}
+              </span>
+            </div>
+            <ChevronDown className={`w-4 h-4 transition-transform ${showTimeSeriesPanel ? 'rotate-180' : ''}`} />
+          </button>
+
+          {showTimeSeriesPanel && (
+            <div className="px-6 py-4 border-t border-border/30 bg-muted/10">
+              <TimeSeriesPanel
+                farmId={selectedFarmId}
+                algorithm={selectedIndex}
+                farmGeometry={savedPolygons.find(p => p.id === selectedFarmId)?.geojson.geometry}
+                dateRange={{
+                  start: new Date(Date.now() - 180 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+                  end: new Date().toISOString().split('T')[0]
+                }}
+              />
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Date Timeline - Scrollable date selector */}
       <div className="px-6 py-4 border-t border-border/30">

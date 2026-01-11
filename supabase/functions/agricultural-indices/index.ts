@@ -99,6 +99,12 @@ async function calculateSatelliteLayer(
     case 'ndwi':
       satelliteResult = await calculateNDWI(poi, startDate, endDate, satellite);
       break;
+    case 'gndvi':
+      satelliteResult = await calculateGNDVI(poi, startDate, endDate, satellite);
+      break;
+    case 'ndre':
+      satelliteResult = await calculateNDRE(poi, startDate, endDate, satellite);
+      break;
     case 'nitrogen':
       satelliteResult = await calculateNitrogen(poi, startDate, endDate, satellite);
       break;
@@ -220,6 +226,8 @@ function getCalculationMethod(index: string): string {
     'savi': 'SAVI = (NIR - Red) × (1 + L) / (NIR + Red + L) - Soil Adjusted Vegetation Index',
     'msavi': 'MSAVI = (2×NIR + 1 - √((2×NIR + 1)² - 8×(NIR - Red))) / 2 - Modified Soil Adjusted Vegetation Index',
     'ndwi': 'NDWI = (NIR - SWIR) / (NIR + SWIR) - Normalized Difference Water Index for Water Detection',
+    'gndvi': 'GNDVI = (NIR - Green) / (NIR + Green) - Green NDVI, more sensitive to chlorophyll concentration',
+    'ndre': 'NDRE = (NIR - RedEdge) / (NIR + RedEdge) - Normalized Difference Red Edge Index for late-season N estimation',
     'nitrogen': 'N = 259.4 × NDVI - 58.6 (R²=0.90) - Nitrogen content in kg N/ha',
     'phosphorus': 'P₂O₅ = 180 × EVI - 25 - Phosphorus content in kg P₂O₅/ha',
     'potassium': 'K₂O = 250 × SAVI - 40 - Potassium content in kg K₂O/ha',
@@ -785,6 +793,174 @@ async function calculateNDWI(
     token: mapIdResult.token,
     min_value: minMax.NDWI_min,
     max_value: minMax.NDWI_max,
+    mean_value: meanValue,
+    std_dev: stdDevValue,
+    data_source: dataSource,
+    cloud_cover: cloudCover,
+    satellite: satellite || null,
+    geojson: {
+      type: "Polygon",
+      coordinates: null
+    }
+  };
+}
+
+// Calculate GNDVI (Green Normalized Difference Vegetation Index)
+// More sensitive to chlorophyll concentration than standard NDVI
+async function calculateGNDVI(
+  poi: any,
+  startDate: string,
+  endDate: string,
+  satellite?: OpticalSatellite,
+  useSingleDate: boolean = false
+) {
+  const collection = getMergedOpticalCollection(poi, startDate, endDate, 100);
+
+  const filteredCollection = satellite
+    ? collection.filter(ee.Filter.eq('satellite', satellite))
+    : collection;
+
+  const imageCount = await evaluate(filteredCollection.size());
+  if (!imageCount || imageCount <= 0) {
+    return null;
+  }
+
+  const image = useSingleDate ? filteredCollection.first() : filteredCollection.median();
+  const nir = image.select("B8");    // NIR band
+  const green = image.select("B3");  // Green band (instead of Red for GNDVI)
+
+  const gndvi = nir.subtract(green).divide(nir.add(green)).rename("GNDVI");
+  const clippedGndvi = gndvi.clip(poi);
+
+  const dataSource = satellite
+    ? buildDataSource([satellite])
+    : await getDataSourceSummary(filteredCollection, evaluate);
+  const scale = getCollectionScale(dataSource.satellites);
+
+  const minMax = await safeReduceRegion(clippedGndvi, {
+    reducer: ee.Reducer.minMax(),
+    geometry: poi,
+    scale: scale,
+    maxPixels: 1e9
+  });
+
+  if (!minMax || !isFiniteNumber(minMax.GNDVI_min) || !isFiniteNumber(minMax.GNDVI_max)) {
+    console.warn('GNDVI statistics unavailable for requested range.');
+    return null;
+  }
+
+  const stats = await safeReduceRegion(clippedGndvi, {
+    reducer: ee.Reducer.mean().combine({
+      reducer2: ee.Reducer.stdDev(),
+      sharedInputs: true
+    }),
+    geometry: poi,
+    scale: scale,
+    maxPixels: 1e9
+  });
+
+  const meanValue = stats && isFiniteNumber(stats.GNDVI_mean) ? stats.GNDVI_mean : null;
+  const stdDevValue = stats && isFiniteNumber(stats.GNDVI_stdDev) ? stats.GNDVI_stdDev : null;
+
+  const vis = {
+    min: minMax.GNDVI_min,
+    max: minMax.GNDVI_max,
+    palette: ["#8B0000", "#FF4500", "#FFD700", "#9ACD32", "#228B22", "#006400"]
+  };
+
+  const mapIdResult = await getMapIdWithRetry(clippedGndvi, vis);
+  const cloudCover = await computeCloudCover(filteredCollection, evaluate);
+
+  return {
+    urlFormat: mapIdResult.urlFormat,
+    mapid: mapIdResult.mapid,
+    token: mapIdResult.token,
+    min_value: minMax.GNDVI_min,
+    max_value: minMax.GNDVI_max,
+    mean_value: meanValue,
+    std_dev: stdDevValue,
+    data_source: dataSource,
+    cloud_cover: cloudCover,
+    satellite: satellite || null,
+    geojson: {
+      type: "Polygon",
+      coordinates: null
+    }
+  };
+}
+
+// Calculate NDRE (Normalized Difference Red Edge Index)
+// Optimal for late-season nitrogen estimation and canopy penetration
+async function calculateNDRE(
+  poi: any,
+  startDate: string,
+  endDate: string,
+  satellite?: OpticalSatellite,
+  useSingleDate: boolean = false
+) {
+  const collection = getMergedOpticalCollection(poi, startDate, endDate, 100);
+
+  const filteredCollection = satellite
+    ? collection.filter(ee.Filter.eq('satellite', satellite))
+    : collection;
+
+  const imageCount = await evaluate(filteredCollection.size());
+  if (!imageCount || imageCount <= 0) {
+    return null;
+  }
+
+  const image = useSingleDate ? filteredCollection.first() : filteredCollection.median();
+  const nir = image.select("B8");       // NIR band
+  const redEdge = image.select("B5");   // Red Edge band (705nm)
+
+  const ndre = nir.subtract(redEdge).divide(nir.add(redEdge)).rename("NDRE");
+  const clippedNdre = ndre.clip(poi);
+
+  const dataSource = satellite
+    ? buildDataSource([satellite])
+    : await getDataSourceSummary(filteredCollection, evaluate);
+  const scale = getCollectionScale(dataSource.satellites);
+
+  const minMax = await safeReduceRegion(clippedNdre, {
+    reducer: ee.Reducer.minMax(),
+    geometry: poi,
+    scale: scale,
+    maxPixels: 1e9
+  });
+
+  if (!minMax || !isFiniteNumber(minMax.NDRE_min) || !isFiniteNumber(minMax.NDRE_max)) {
+    console.warn('NDRE statistics unavailable for requested range.');
+    return null;
+  }
+
+  const stats = await safeReduceRegion(clippedNdre, {
+    reducer: ee.Reducer.mean().combine({
+      reducer2: ee.Reducer.stdDev(),
+      sharedInputs: true
+    }),
+    geometry: poi,
+    scale: scale,
+    maxPixels: 1e9
+  });
+
+  const meanValue = stats && isFiniteNumber(stats.NDRE_mean) ? stats.NDRE_mean : null;
+  const stdDevValue = stats && isFiniteNumber(stats.NDRE_stdDev) ? stats.NDRE_stdDev : null;
+
+  const vis = {
+    min: minMax.NDRE_min,
+    max: minMax.NDRE_max,
+    palette: ["#8B4513", "#DAA520", "#ADFF2F", "#32CD32", "#006400"]
+  };
+
+  const mapIdResult = await getMapIdWithRetry(clippedNdre, vis);
+  const cloudCover = await computeCloudCover(filteredCollection, evaluate);
+
+  return {
+    urlFormat: mapIdResult.urlFormat,
+    mapid: mapIdResult.mapid,
+    token: mapIdResult.token,
+    min_value: minMax.NDRE_min,
+    max_value: minMax.NDRE_max,
     mean_value: meanValue,
     std_dev: stdDevValue,
     data_source: dataSource,
@@ -1505,6 +1681,208 @@ async function calculateCarbon(
   };
 }
 
+/**
+ * Calculate agricultural index for each individual satellite image
+ * Returns per-image statistics for time-series visualization
+ */
+async function calculatePerImageTimeSeries(
+  index: string,
+  poi: any,
+  startDate: string,
+  endDate: string,
+  satellite?: OpticalSatellite
+): Promise<Array<{
+  startDate: string;
+  endDate: string;
+  mean: number;
+  stdDev: number;
+  min: number;
+  max: number;
+  cloudCover: number | null;
+  sensors: string[];
+}>> {
+  // Only support optical indices
+  if (!['ndvi', 'evi', 'savi', 'msavi', 'gndvi', 'ndre', 'ndwi', 'moisture'].includes(index)) {
+    throw new Error(`Index ${index} not yet supported in per-image time series mode`);
+  }
+
+  // Determine which satellites to use
+  const satellites = satellite ? [satellite] : ['Sentinel-2'] as OpticalSatellite[];
+
+  // Process each satellite separately and combine results
+  const allResults = [];
+
+  for (const sat of satellites) {
+    try {
+      let collection;
+
+      if (sat === 'Sentinel-2') {
+        // Build and filter Sentinel-2 collection
+        collection = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+          .filterBounds(poi)
+          .filterDate(startDate, endDate)
+          .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 30));
+
+        // Get the list size first
+        const size = await collection.size().getInfo();
+        if (size === 0) continue;
+
+        // Limit images per satellite
+        const limit = Math.min(size, 50);
+        const imageList = collection.sort('system:time_start').toList(limit);
+
+        // Process each image
+        for (let i = 0; i < limit; i++) {
+          try {
+            const img = ee.Image(imageList.get(i));
+
+            // Scale and calculate index
+            const scaled = img.multiply(0.0001);
+            let indexImg;
+
+            // Calculate index based on type (Sentinel-2 bands)
+            if (index === 'ndvi') {
+              indexImg = scaled.normalizedDifference(['B8', 'B4']);
+            } else if (index === 'evi') {
+              const nir = scaled.select('B8');
+              const red = scaled.select('B4');
+              const blue = scaled.select('B2');
+              indexImg = nir.subtract(red)
+                .divide(nir.add(red.multiply(6)).subtract(blue.multiply(7.5)).add(1))
+                .multiply(2.5);
+            } else if (index === 'savi') {
+              indexImg = scaled.expression(
+                '((NIR - RED) / (NIR + RED + L)) * (1 + L)',
+                { NIR: scaled.select('B8'), RED: scaled.select('B4'), L: 0.5 }
+              );
+            } else if (index === 'msavi') {
+              indexImg = scaled.expression(
+                '(2 * NIR + 1 - sqrt(pow((2 * NIR + 1), 2) - 8 * (NIR - RED))) / 2',
+                { NIR: scaled.select('B8'), RED: scaled.select('B4') }
+              );
+            } else if (index === 'gndvi') {
+              indexImg = scaled.normalizedDifference(['B8', 'B3']);
+            } else if (index === 'ndre') {
+              indexImg = scaled.normalizedDifference(['B8', 'B5']);
+            } else if (index === 'ndwi') {
+              indexImg = scaled.normalizedDifference(['B3', 'B8']);
+            } else if (index === 'moisture') {
+              indexImg = scaled.normalizedDifference(['B8', 'B11']);
+            } else {
+              indexImg = scaled.normalizedDifference(['B8', 'B4']); // Default NDVI
+            }
+
+            // Get metadata
+            const timestamp = await img.get('system:time_start').getInfo();
+            const date = new Date(timestamp);
+            const dateStr = date.toISOString().split('T')[0];
+
+            // Calculate statistics
+            const stats = await indexImg.reduceRegion({
+              reducer: ee.Reducer.mean()
+                .combine(ee.Reducer.stdDev(), '', true)
+                .combine(ee.Reducer.min(), '', true)
+                .combine(ee.Reducer.max(), '', true),
+              geometry: poi,
+              scale: 10,
+              maxPixels: 1e9,
+              bestEffort: true
+            }).getInfo();
+
+            const meanKey = Object.keys(stats).find(k => k.includes('mean'));
+            const stdDevKey = Object.keys(stats).find(k => k.includes('stdDev'));
+            const minKey = Object.keys(stats).find(k => k.includes('min'));
+            const maxKey = Object.keys(stats).find(k => k.includes('max'));
+
+            if (meanKey && stats[meanKey] !== null && stats[meanKey] !== undefined) {
+              allResults.push({
+                startDate: dateStr,
+                endDate: dateStr,
+                mean: stats[meanKey],
+                stdDev: stats[stdDevKey] || 0,
+                min: stats[minKey] || stats[meanKey],
+                max: stats[maxKey] || stats[meanKey],
+                cloudCover: null,
+                sensors: [sat]
+              });
+            }
+          } catch (imgError) {
+            console.warn(`Error processing ${sat} image ${i}:`, imgError);
+            // Continue with other images
+          }
+        }
+      }
+    } catch (satError) {
+      console.error(`Error processing satellite ${sat}:`, satError);
+      // Continue with other satellites
+    }
+  }
+
+  // Sort by date
+  allResults.sort((a, b) => new Date(a.startDate).getTime() - new Date(b.startDate).getTime());
+
+  return allResults;
+}
+
+/**
+ * Calculate agricultural index for a single time window
+ * Returns statistics only (no map tiles)
+ * Used for time-series analysis
+ */
+async function calculateIndexForWindow(
+  index: string,
+  poi: any,
+  startDate: string,
+  endDate: string,
+  satellite?: OpticalSatellite
+): Promise<{
+  mean_value: number;
+  std_dev: number;
+  min_value: number;
+  max_value: number;
+  cloud_cover?: number;
+  data_source?: any;
+} | null> {
+  // Reuse existing calculation functions
+  // Set useSingleDate = false to use median composite
+  let result;
+
+  switch (index) {
+    case 'nitrogen':
+      result = await calculateNitrogen(poi, startDate, endDate, satellite, false);
+      break;
+    case 'phosphorus':
+      result = await calculatePhosphorus(poi, startDate, endDate, satellite, false);
+      break;
+    case 'potassium':
+      result = await calculatePotassium(poi, startDate, endDate, satellite, false);
+      break;
+    case 'ndwi':
+      result = await calculateNDWI(poi, startDate, endDate, satellite, false);
+      break;
+    case 'moisture':
+      result = await calculateMoisture(poi, startDate, endDate, satellite, false);
+      break;
+    case 'msavi':
+      result = await calculateMSAVI(poi, startDate, endDate, satellite, false);
+      break;
+    default:
+      return null;
+  }
+
+  if (!result) return null;
+
+  // Extract only the statistics we need (no map tiles)
+  return {
+    mean_value: result.mean_value,
+    std_dev: result.std_dev,
+    min_value: result.min_value,
+    max_value: result.max_value,
+    cloud_cover: result.cloud_cover,
+    data_source: result.data_source
+  };
+}
+
 Deno.serve(async (req) => {
   // Handle CORS preflight
   const corsResponse = handleCors(req);
@@ -1519,6 +1897,10 @@ Deno.serve(async (req) => {
     const index = url.searchParams.get('index') || 'ndvi';
     const satelliteParam = url.searchParams.get('satellite'); // e.g., "Sentinel-2", "Landsat-8", "Landsat-9", "Sentinel-1 SAR"
     const dateParam = url.searchParams.get('date'); // Specific date: YYYY-MM-DD
+
+    // Time-series parameters
+    const timeSeriesMode = url.searchParams.get('timeseries') === 'true';
+    const windowSizeDays = parseInt(url.searchParams.get('windowDays') || '10', 10);
 
     // If a specific date is provided, use it as both start and end (single day)
     let start: string;
@@ -1544,6 +1926,7 @@ Deno.serve(async (req) => {
     }
 
     const polygon = url.searchParams.get('polygon');
+    const farmId = url.searchParams.get('farmId'); // Farm ID for caching
 
     // Validate satellite parameter if provided
     const validSatellites = ['Sentinel-2', 'Landsat-8', 'Landsat-9', 'Sentinel-1 SAR'];
@@ -1673,6 +2056,96 @@ Deno.serve(async (req) => {
     // Calculate different indices based on selection
     const indexKey = index.toLowerCase();
     const useSingleDate = dateParam !== null; // Flag to use single image instead of median
+
+    // Time-series mode: return per-image statistics instead of map tiles
+    if (timeSeriesMode && polygon) {
+      try {
+        let imageResults = [];
+        let cached = false;
+
+        // Try to get from cache if farmId is provided
+        if (farmId) {
+          const { data: cachedData, error: cacheError } = await supabaseClient
+            .from('agricultural_index_timeseries')
+            .select('*')
+            .eq('farm_id', farmId)
+            .eq('algorithm', indexKey)
+            .gte('observation_date', start)
+            .lte('observation_date', end)
+            .order('observation_date', { ascending: true });
+
+          if (!cacheError && cachedData && cachedData.length > 0) {
+            console.log(`Cache hit: Found ${cachedData.length} cached observations for ${indexKey}`);
+            cached = true;
+            imageResults = cachedData.map((row: any) => ({
+              startDate: row.observation_date,
+              endDate: row.observation_date,
+              mean: row.mean_value,
+              stdDev: row.std_dev || 0,
+              min: row.min_value || row.mean_value,
+              max: row.max_value || row.mean_value,
+              cloudCover: row.cloud_cover,
+              sensors: [row.satellite]
+            }));
+          }
+        }
+
+        // If no cache hit, compute from Earth Engine
+        if (imageResults.length === 0) {
+          console.log(`Cache miss: Computing ${indexKey} time series from Earth Engine`);
+          imageResults = await calculatePerImageTimeSeries(
+            indexKey,
+            poi,
+            start,
+            end,
+            selectedSatellite
+          );
+
+          // Store in cache if farmId is provided
+          if (farmId && imageResults.length > 0) {
+            const cacheRecords = imageResults.map((result: any) => ({
+              farm_id: farmId,
+              algorithm: indexKey,
+              observation_date: result.startDate,
+              mean_value: result.mean,
+              std_dev: result.stdDev,
+              min_value: result.min,
+              max_value: result.max,
+              cloud_cover: result.cloudCover,
+              satellite: result.sensors[0]
+            }));
+
+            const { error: insertError } = await supabaseClient
+              .from('agricultural_index_timeseries')
+              .upsert(cacheRecords, {
+                onConflict: 'farm_id,algorithm,observation_date',
+                ignoreDuplicates: false
+              });
+
+            if (insertError) {
+              console.error('Error caching time series data:', insertError);
+              // Don't fail the request if caching fails
+            } else {
+              console.log(`Cached ${cacheRecords.length} observations for ${indexKey}`);
+            }
+          }
+        }
+
+        return successResponse({
+          algorithm: indexKey,
+          windows: imageResults,
+          metadata: {
+            dateRange: { start, end },
+            imageCount: imageResults.length,
+            mode: 'per-image',
+            cached
+          }
+        });
+      } catch (error) {
+        console.error('Error processing time series:', error);
+        return errorResponse(`Failed to process time series: ${error.message}`, 500);
+      }
+    }
 
     let result;
     switch (indexKey) {

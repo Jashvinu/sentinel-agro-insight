@@ -137,13 +137,29 @@ const FitBounds: React.FC<{ geometry: GeoJSON.Geometry }> = ({ geometry }) => {
     const map = useMap();
 
     React.useEffect(() => {
-        if (geometry && geometry.type === 'Polygon') {
-            const coordinates = geometry.coordinates[0] as [number, number][];
-            const bounds = coordinates.map((coord) => [coord[1], coord[0]] as [number, number]);
+        console.log('[TrendMap] FitBounds geometry:', geometry);
 
-            if (bounds.length > 0) {
-                map.fitBounds(bounds, { padding: [50, 50] });
-            }
+        if (!geometry) {
+            console.warn('[TrendMap] No geometry provided to FitBounds');
+            return;
+        }
+
+        // Handle both direct Polygon and Feature with Polygon geometry
+        let polygonCoords: [number, number][] | null = null;
+
+        if (geometry.type === 'Polygon') {
+            polygonCoords = geometry.coordinates[0] as [number, number][];
+        } else if (geometry.type === 'Feature' && (geometry as any).geometry?.type === 'Polygon') {
+            polygonCoords = (geometry as any).geometry.coordinates[0] as [number, number][];
+        }
+
+        if (polygonCoords && polygonCoords.length > 0) {
+            // Convert from [lon, lat] to [lat, lon] for Leaflet
+            const bounds = polygonCoords.map((coord) => [coord[1], coord[0]] as [number, number]);
+            console.log('[TrendMap] Fitting bounds:', bounds);
+            map.fitBounds(bounds, { padding: [50, 50] });
+        } else {
+            console.warn('[TrendMap] Could not extract polygon coordinates from geometry:', geometry);
         }
     }, [geometry, map]);
 
@@ -159,6 +175,8 @@ export const TrendMap: React.FC<TrendMapProps> = ({
     center = [0, 0],
     zoom = 13,
 }) => {
+    console.log('[TrendMap] Component props:', { trends, farmPolygon, center, zoom });
+
     const [selectedAlgorithm, setSelectedAlgorithm] = useState<string>(
         trends.length > 0 ? trends[0].algorithm : ''
     );
@@ -171,17 +189,34 @@ export const TrendMap: React.FC<TrendMapProps> = ({
 
     // Calculate map center from farm polygon
     const mapCenter = useMemo(() => {
-        if (farmPolygon && farmPolygon.type === 'Polygon') {
-            const coordinates = farmPolygon.coordinates[0] as [number, number][];
-            if (coordinates.length > 0) {
-                const lats = coordinates.map((c) => c[1]);
-                const lons = coordinates.map((c) => c[0]);
-                return [
-                    (Math.min(...lats) + Math.max(...lats)) / 2,
-                    (Math.min(...lons) + Math.max(...lons)) / 2,
-                ] as [number, number];
-            }
+        console.log('[TrendMap] Calculating center from farmPolygon:', farmPolygon);
+
+        if (!farmPolygon) {
+            console.log('[TrendMap] No farmPolygon, using default center:', center);
+            return center;
         }
+
+        // Handle both direct Polygon and Feature with Polygon geometry
+        let polygonCoords: [number, number][] | null = null;
+
+        if (farmPolygon.type === 'Polygon') {
+            polygonCoords = farmPolygon.coordinates[0] as [number, number][];
+        } else if (farmPolygon.type === 'Feature' && (farmPolygon as any).geometry?.type === 'Polygon') {
+            polygonCoords = (farmPolygon as any).geometry.coordinates[0] as [number, number][];
+        }
+
+        if (polygonCoords && polygonCoords.length > 0) {
+            const lats = polygonCoords.map((c) => c[1]);
+            const lons = polygonCoords.map((c) => c[0]);
+            const calculatedCenter = [
+                (Math.min(...lats) + Math.max(...lats)) / 2,
+                (Math.min(...lons) + Math.max(...lons)) / 2,
+            ] as [number, number];
+            console.log('[TrendMap] Calculated center:', calculatedCenter);
+            return calculatedCenter;
+        }
+
+        console.warn('[TrendMap] Could not calculate center, using default:', center);
         return center;
     }, [farmPolygon, center]);
 

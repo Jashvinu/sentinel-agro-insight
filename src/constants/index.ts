@@ -329,6 +329,43 @@ export const AGRICULTURAL_INDICES = {
         accuracy: 'R² = 0.80-0.90',
         requiresCalibration: false
     },
+    gndvi: {
+        id: 'gndvi',
+        name: 'Green NDVI',
+        category: 'Vegetation',
+        unit: 'Index',
+        description: 'Green Normalized Difference Vegetation Index - more sensitive to chlorophyll concentration',
+        formulas: {
+            primary: 'GNDVI = (B8 - B3) / (B8 + B3)',
+            note: 'Uses Green band (B3) instead of Red band for higher chlorophyll sensitivity'
+        },
+        ranges: {
+            low: { min: 0, max: 0.3, color: '#ef4444', status: 'Low' },
+            medium: { min: 0.3, max: 0.5, color: '#f59e0b', status: 'Medium' },
+            high: { min: 0.5, max: 0.8, color: '#10b981', status: 'High' }
+        },
+        accuracy: 'R² = 0.85-0.92',
+        requiresCalibration: false
+    },
+    ndre: {
+        id: 'ndre',
+        name: 'Red Edge NDVI',
+        category: 'Vegetation',
+        unit: 'Index',
+        description: 'Normalized Difference Red Edge Index - optimal for late-season nitrogen estimation',
+        formulas: {
+            primary: 'NDRE = (B8 - B5) / (B8 + B5)',
+            note: 'Uses Red Edge band (B5) for better canopy penetration and N detection',
+            nitrogenConversion: 'N = 45.2 × NDRE + 125.8 (R²=0.91)'
+        },
+        ranges: {
+            low: { min: 0, max: 0.2, color: '#ef4444', status: 'Low' },
+            medium: { min: 0.2, max: 0.4, color: '#f59e0b', status: 'Medium' },
+            high: { min: 0.4, max: 0.7, color: '#10b981', status: 'High' }
+        },
+        accuracy: 'R² = 0.88-0.95',
+        requiresCalibration: false
+    },
     ndwi: {
         id: 'ndwi',
         name: 'Water Content',
@@ -554,4 +591,30 @@ export const ALGORITHM_CONFIGS = {
         category: 'nutrients' as const,
         color: '#84cc16', // lime-500
     },
+} as const;
+
+// Historical trends algorithm colors (for time-series charts)
+export const TIMESERIES_ALGORITHM_COLORS: Record<string, string> = {
+    // Vegetation indices
+    ndvi: '#22c55e',          // green-500
+    evi: '#16a34a',           // green-600
+    savi: '#15803d',          // green-700
+    msavi: '#10b981',         // emerald-500
+    gndvi: '#84cc16',         // lime-500
+    ndre: '#a3e635',          // lime-400
+    // NPK indices
+    nitrogen: '#ef4444',      // red-500
+    phosphorus: '#f59e0b',    // amber-500
+    potassium: '#10b981',     // emerald-500
+    // Water indices
+    ndwi: '#3b82f6',          // blue-500
+    moisture: '#06b6d4',      // cyan-500
+    // Advanced monitoring (from ALGORITHM_CONFIGS)
+    optram_moisture: '#3b82f6',
+    sar_moisture_change: '#8b5cf6',
+    sar_moisture_fusion: '#06b6d4',
+    pca_phosphorus: '#f59e0b',
+    pca_potassium: '#ec4899',
+    nitrogen_gndvi: '#10b981',
+    nitrogen_ndre: '#84cc16',
 } as const; 

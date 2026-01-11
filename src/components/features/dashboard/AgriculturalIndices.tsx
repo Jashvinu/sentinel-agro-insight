@@ -143,6 +143,26 @@ export const AgriculturalIndices: React.FC<AgriculturalIndicesProps> = ({
                 confidence: 0.90,
                 timestamp: new Date().toISOString(),
                 requiresCalibration: false
+            },
+            gndvi: {
+                indexId: 'gndvi',
+                value: 0.55,
+                unit: 'Index',
+                status: 'High',
+                color: '#10b981',
+                confidence: 0.88,
+                timestamp: new Date().toISOString(),
+                requiresCalibration: false
+            },
+            ndre: {
+                indexId: 'ndre',
+                value: 0.35,
+                unit: 'Index',
+                status: 'Medium',
+                color: '#f59e0b',
+                confidence: 0.89,
+                timestamp: new Date().toISOString(),
+                requiresCalibration: false
             }
         }
     };
@@ -154,7 +174,7 @@ export const AgriculturalIndices: React.FC<AgriculturalIndicesProps> = ({
         'pH': ['ph'],
         'Moisture': ['moisture'],
         'Carbon': ['carbon'],
-        'Vegetation': ['ndvi', 'evi', 'savi', 'msavi'],
+        'Vegetation': ['ndvi', 'evi', 'savi', 'msavi', 'gndvi', 'ndre'],
         'Water': ['ndwi']
     };
 

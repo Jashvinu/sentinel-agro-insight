@@ -71,6 +71,20 @@ const INDEX_CONFIG: Record<string, {
     unit: '',
     description: 'Modified SAVI'
   },
+  gndvi: {
+    icon: Leaf,
+    label: 'GNDVI',
+    color: 'bg-green-600',
+    unit: '',
+    description: 'Green NDVI'
+  },
+  ndre: {
+    icon: Sprout,
+    label: 'NDRE',
+    color: 'bg-red-600',
+    unit: '',
+    description: 'Red Edge NDVI'
+  },
   ndwi: {
     icon: Droplets,
     label: 'NDWI',
