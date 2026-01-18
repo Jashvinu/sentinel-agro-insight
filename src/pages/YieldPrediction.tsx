@@ -18,7 +18,7 @@ import {
 import { YieldPredictionInput, YieldPredictionResult } from '@/types';
 import { predictCropYield, getEvergreenFarmDummyData } from '@/services/yieldPredictionService';
 import { useAbeFarm } from '@/hooks/useAbeFarm';
-import { supabase } from '@/services/supabase';
+import { getFarmById } from '@/services/farmService';
 import { toast } from '@/hooks/useToast';
 
 const YieldPrediction = () => {
@@ -44,28 +44,25 @@ const YieldPrediction = () => {
 
   const loadFarmGeometry = async (id: string) => {
     try {
-      const { data, error } = await supabase
-        .from('farms')
-        .select('geometry, name, area_hectares')
-        .eq('id', id)
-        .single();
+      // Get farm from localStorage
+      const farm = await getFarmById(id);
 
-      if (!error && data?.geometry) {
-        const geometryStr = JSON.stringify(data.geometry);
+      if (farm?.geometry) {
+        const geometryStr = JSON.stringify(farm.geometry);
         setFarmGeometry(geometryStr);
 
         // Update form with farm data
         setFormData(prev => ({
           ...prev,
           farmId: id,
-          fieldAreaHectares: data.area_hectares || prev.fieldAreaHectares,
+          fieldAreaHectares: farm.area_hectares || prev.fieldAreaHectares,
         }));
 
         // Auto-fetch NPK and satellite data
         await fetchFieldData(geometryStr, id);
       }
     } catch (error) {
-      // Error loading farm geometry
+      console.error('[YieldPrediction] Error loading farm geometry:', error);
     }
   };
 

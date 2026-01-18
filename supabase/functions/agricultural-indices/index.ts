@@ -14,7 +14,6 @@ import {
 } from '../_shared/satellite-utils.ts';
 
 // Import Earth Engine using npm: specifier for Deno
-// @deno-types="npm:@types/google__earthengine"
 import ee from 'npm:@google/earthengine@1.6.13';
 
 // Get geoJsonToEarthEngine from the module (with fallback)
@@ -2003,6 +2002,11 @@ Deno.serve(async (req) => {
     await authenticate(serviceAccountKey);
     console.log('Earth Engine authenticated successfully');
 
+    // Initialize Supabase client early for time-series caching
+    const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+    const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+    const supabase = createClient(supabaseUrl, supabaseKey);
+
     // Use custom polygon if provided, otherwise use default
     let poi: any;
     let polygonCoords: number[][][] | null = null;
@@ -2065,7 +2069,7 @@ Deno.serve(async (req) => {
 
         // Try to get from cache if farmId is provided
         if (farmId) {
-          const { data: cachedData, error: cacheError } = await supabaseClient
+          const { data: cachedData, error: cacheError } = await supabase
             .from('agricultural_index_timeseries')
             .select('*')
             .eq('farm_id', farmId)
@@ -2115,7 +2119,7 @@ Deno.serve(async (req) => {
               satellite: result.sensors[0]
             }));
 
-            const { error: insertError } = await supabaseClient
+            const { error: insertError } = await supabase
               .from('agricultural_index_timeseries')
               .upsert(cacheRecords, {
                 onConflict: 'farm_id,algorithm,observation_date',
@@ -2214,11 +2218,6 @@ Deno.serve(async (req) => {
         index: index.toUpperCase()
       }
     };
-
-    // Initialize Supabase client and save to database
-    const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
-    const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-    const supabase = createClient(supabaseUrl, supabaseKey);
 
     // Save to database (non-blocking)
     // Construct proper tile URL from mapid and token

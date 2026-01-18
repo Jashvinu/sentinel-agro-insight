@@ -400,13 +400,12 @@ const DrawPolygon: React.FC<PolygonDrawingPageProps> = () => {
 
             // Save to database using polygonsToFarmInsert
             const farmInsert = polygonsToFarmInsert(polygons, polygonName.trim());
-            const { farm: savedFarm, error: saveError } = await saveFarm(farmInsert);
+            const savedFarm = await saveFarm(farmInsert);
 
-            if (saveError || !savedFarm) {
-                const errorMessage = saveError?.message || 'Failed to save farm to database';
+            if (!savedFarm) {
                 toast({
                     title: 'Error Saving Farm',
-                    description: errorMessage,
+                    description: 'Failed to save farm to database',
                     variant: 'destructive',
                 });
                 return;

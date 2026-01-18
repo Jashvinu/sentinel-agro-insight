@@ -6,7 +6,6 @@ import { successResponse, errorResponse } from '../_shared/response.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3';
 import { getAllSatelliteDates, getIndicesForSatellite, geoJsonToEarthEngine } from '../_shared/satellite-utils.ts';
 
-// @deno-types="npm:@types/google__earthengine"
 import ee from 'npm:@google/earthengine@1.6.13';
 
 const DEFAULT_FARM_ID = 'df43eedf-850d-454c-9fbf-36a052be10c0';

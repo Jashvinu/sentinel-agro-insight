@@ -1,5 +1,39 @@
-import { supabase, type Farm, type FarmInsert, type Geometry } from './supabase';
+import { type Farm, type FarmInsert, type Geometry } from './supabase';
 import { bbox, area, circle } from '@turf/turf';
+
+// Local storage key for farms
+const FARMS_STORAGE_KEY = 'sentinel_farms';
+
+/**
+ * Generate a unique ID for farms
+ */
+function generateId(): string {
+  return `farm-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+}
+
+/**
+ * Get all farms from localStorage
+ */
+function getFarmsFromStorage(): Farm[] {
+  try {
+    const data = localStorage.getItem(FARMS_STORAGE_KEY);
+    return data ? JSON.parse(data) : [];
+  } catch (error) {
+    console.error('Error reading farms from localStorage:', error);
+    return [];
+  }
+}
+
+/**
+ * Save farms to localStorage
+ */
+function saveFarmsToStorage(farms: Farm[]): void {
+  try {
+    localStorage.setItem(FARMS_STORAGE_KEY, JSON.stringify(farms));
+  } catch (error) {
+    console.error('Error saving farms to localStorage:', error);
+  }
+}
 
 /**
  * Calculate area in hectares from GeoJSON polygon or multipolygon using Turf.js
@@ -32,7 +66,7 @@ function calculateBounds(geometry: { type: 'Polygon' | 'MultiPolygon'; coordinat
   maxLat: number;
 } {
   let allCoords: number[][] = [];
-  
+
   if (geometry.type === 'Polygon') {
     allCoords = (geometry.coordinates as number[][][])[0];
   } else if (geometry.type === 'MultiPolygon') {
@@ -40,10 +74,10 @@ function calculateBounds(geometry: { type: 'Polygon' | 'MultiPolygon'; coordinat
     const multipolyCoords = geometry.coordinates as number[][][][];
     allCoords = multipolyCoords.flatMap(polygon => polygon[0]);
   }
-  
+
   const lngs = allCoords.map(c => c[0]);
   const lats = allCoords.map(c => c[1]);
-  
+
   return {
     minLng: Math.min(...lngs),
     minLat: Math.min(...lats),
@@ -53,33 +87,35 @@ function calculateBounds(geometry: { type: 'Polygon' | 'MultiPolygon'; coordinat
 }
 
 /**
- * Save a farm polygon to the database
+ * Save a farm polygon to localStorage
  */
 export async function saveFarm(farmData: FarmInsert): Promise<Farm | null> {
   try {
     // Calculate bounds if not provided
     const bounds = farmData.bounds || calculateBounds(farmData.geometry);
-    
+
     // Calculate area if not provided
     const area_hectares = farmData.area_hectares || calculateArea(farmData.geometry);
-    
-    const { data, error } = await supabase
-      .from('farms')
-      .insert({
-        name: farmData.name,
-        geometry: farmData.geometry,
-        bounds,
-        area_hectares,
-      })
-      .select()
-      .single();
-    
-    if (error) {
-      console.error('Error saving farm:', error);
-      throw error;
-    }
-    
-    return data as Farm;
+
+    const now = new Date().toISOString();
+    const newFarm: Farm = {
+      id: generateId(),
+      name: farmData.name,
+      geometry: farmData.geometry,
+      bounds,
+      area_hectares,
+      user_id: farmData.user_id || 'local-dev-user',
+      created_at: now,
+      updated_at: now,
+    };
+
+    // Get existing farms and add the new one
+    const farms = getFarmsFromStorage();
+    farms.unshift(newFarm); // Add to beginning (most recent first)
+    saveFarmsToStorage(farms);
+
+    console.log('[FarmService] Farm saved to localStorage:', newFarm.id);
+    return newFarm;
   } catch (error) {
     console.error('Failed to save farm:', error);
     return null;
@@ -87,21 +123,13 @@ export async function saveFarm(farmData: FarmInsert): Promise<Farm | null> {
 }
 
 /**
- * Get all farms from the database
+ * Get all farms from localStorage
  */
 export async function getAllFarms(): Promise<Farm[]> {
   try {
-    const { data, error } = await supabase
-      .from('farms')
-      .select('*')
-      .order('created_at', { ascending: false });
-    
-    if (error) {
-      console.error('Error fetching farms:', error);
-      throw error;
-    }
-    
-    return (data || []) as Farm[];
+    const farms = getFarmsFromStorage();
+    console.log('[FarmService] Retrieved', farms.length, 'farms from localStorage');
+    return farms;
   } catch (error) {
     console.error('Failed to fetch farms:', error);
     return [];
@@ -113,20 +141,24 @@ export async function getAllFarms(): Promise<Farm[]> {
  */
 export async function getFarmById(id: string): Promise<Farm | null> {
   try {
-    const { data, error } = await supabase
-      .from('farms')
-      .select('*')
-      .eq('id', id)
-      .single();
-    
-    if (error) {
-      console.error('Error fetching farm:', error);
-      return null;
-    }
-    
-    return data as Farm;
+    const farms = getFarmsFromStorage();
+    const farm = farms.find(f => f.id === id);
+    return farm || null;
   } catch (error) {
     console.error('Failed to fetch farm:', error);
+    return null;
+  }
+}
+
+/**
+ * Get the first/default farm (for local development)
+ */
+export async function getDefaultFarm(): Promise<Farm | null> {
+  try {
+    const farms = getFarmsFromStorage();
+    return farms.length > 0 ? farms[0] : null;
+  } catch (error) {
+    console.error('Failed to fetch default farm:', error);
     return null;
   }
 }
@@ -136,19 +168,22 @@ export async function getFarmById(id: string): Promise<Farm | null> {
  */
 export async function updateFarmName(id: string, name: string): Promise<Farm | null> {
   try {
-    const { data, error } = await supabase
-      .from('farms')
-      .update({ name, updated_at: new Date().toISOString() })
-      .eq('id', id)
-      .select()
-      .single();
-    
-    if (error) {
-      console.error('Error updating farm:', error);
-      throw error;
+    const farms = getFarmsFromStorage();
+    const index = farms.findIndex(f => f.id === id);
+
+    if (index === -1) {
+      console.error('Farm not found:', id);
+      return null;
     }
-    
-    return data as Farm;
+
+    farms[index] = {
+      ...farms[index],
+      name,
+      updated_at: new Date().toISOString(),
+    };
+
+    saveFarmsToStorage(farms);
+    return farms[index];
   } catch (error) {
     console.error('Failed to update farm:', error);
     return null;
@@ -160,16 +195,16 @@ export async function updateFarmName(id: string, name: string): Promise<Farm | n
  */
 export async function deleteFarm(id: string): Promise<boolean> {
   try {
-    const { error } = await supabase
-      .from('farms')
-      .delete()
-      .eq('id', id);
-    
-    if (error) {
-      console.error('Error deleting farm:', error);
-      throw error;
+    const farms = getFarmsFromStorage();
+    const filteredFarms = farms.filter(f => f.id !== id);
+
+    if (filteredFarms.length === farms.length) {
+      console.warn('Farm not found for deletion:', id);
+      return false;
     }
-    
+
+    saveFarmsToStorage(filteredFarms);
+    console.log('[FarmService] Farm deleted:', id);
     return true;
   } catch (error) {
     console.error('Failed to delete farm:', error);
@@ -187,7 +222,7 @@ export function polygonsToFarmInsert(
   if (polygons.length === 0) {
     throw new Error('At least one polygon is required');
   }
-  
+
   // If only one polygon, return as Polygon
   if (polygons.length === 1) {
     const geometry = polygons[0];
@@ -198,13 +233,13 @@ export function polygonsToFarmInsert(
       area_hectares: calculateArea(geometry),
     };
   }
-  
+
   // If multiple polygons, convert to MultiPolygon
   const multipolygon: { type: 'MultiPolygon'; coordinates: number[][][][] } = {
     type: 'MultiPolygon',
     coordinates: polygons.map(p => p.coordinates),
   };
-  
+
   return {
     name,
     geometry: multipolygon,
@@ -240,12 +275,12 @@ export function createCircularFarm(
   // Turf circle expects [lng, lat] and radius in kilometers
   const radiusInKm = radiusInMeters / 1000;
   const circleFeature = circle(center, radiusInKm, { steps, units: 'kilometers' });
-  
+
   // Extract coordinates from the circle
   const coordinates = circleFeature.geometry.coordinates;
-  const bounds = calculateBounds(coordinates);
+  const bounds = calculateBounds(circleFeature.geometry);
   const area_hectares = calculateArea(circleFeature.geometry);
-  
+
   return {
     name,
     geometry: {
@@ -256,4 +291,3 @@ export function createCircularFarm(
     area_hectares,
   };
 }
-

@@ -23,9 +23,7 @@ dist-ssr
 *.sln
 *.sw?
 .vercel
-.env
-.env.local
-.env.production
+
 
 # Temporary files
 tmp_*.json
@@ -35,3 +33,8 @@ test-api.ipynb
 *-credentials.json
 avid-infinity-*.json
 wrkfarm-*.json
+
+# Server
+server/.env
+server/node_modules
+server/dist

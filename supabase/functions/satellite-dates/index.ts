@@ -4,15 +4,14 @@
 import { handleCors } from '../_shared/cors.ts';
 import { successResponse, errorResponse } from '../_shared/response.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3';
-import { 
-  SATELLITES, 
-  getIndicesForSatellite, 
+import {
+  SATELLITES,
+  getIndicesForSatellite,
   geoJsonToEarthEngine,
   getAllOpticalDates,
   getSentinel1Dates
 } from '../_shared/satellite-utils.ts';
 
-// @deno-types="npm:@types/google__earthengine"
 import ee from 'npm:@google/earthengine@1.6.13';
 
 // Earth Engine authentication function
@@ -100,7 +99,7 @@ Deno.serve(async (req) => {
 
     // Check if we should refresh from Earth Engine
     let shouldRefresh = forceRefresh;
-    
+
     if (!shouldRefresh && farmId) {
       const { data: latestObs } = await supabase
         .from('satellite_observations')

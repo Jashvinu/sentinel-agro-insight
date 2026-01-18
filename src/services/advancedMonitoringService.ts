@@ -22,15 +22,15 @@ export const advancedMonitoringService = {
         request: AdvancedMonitoringRequest
     ): Promise<AdvancedMonitoringResponse> {
         const url = buildApiUrl('/advanced-monitoring');
-        
+
         // Check if using local server (localhost or 127.0.0.1)
         const isLocalServer = url.includes('localhost') || url.includes('127.0.0.1');
-        
+
         // Only include Supabase headers if not using local server
         const headers: Record<string, string> = {
             'Content-Type': 'application/json',
         };
-        
+
         if (!isLocalServer) {
             Object.assign(headers, getSupabaseFunctionHeaders());
         }
@@ -48,12 +48,25 @@ export const advancedMonitoringService = {
 
         const result = await response.json();
 
-        // Validate response structure
-        if (!result.success || !result.data) {
+        // Validate response structure - data can be at root level or nested in 'data' property
+        if (!result.success) {
             throw new Error('Invalid response format from server');
         }
 
-        return result.data;
+        // Handle both response formats:
+        // 1. { success, data: { timeseries, trends, metadata } }
+        // 2. { success, timeseries, trends, maps, metadata }
+        if (result.data) {
+            return result.data;
+        }
+
+        // Extract data from root level response
+        return {
+            timeseries: result.timeseries || [],
+            trends: result.trends || [],
+            maps: result.maps || {},
+            metadata: result.metadata,
+        };
     },
 
 };

@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import { Navigation } from '@/components/layout/navigation/navigation';
 import { DashboardKPIs } from '@/components/features/dashboard/DashboardKPIs';
-import { AIFieldReport } from '@/components/features/dashboard/AIFieldReport';
+// Temporarily disabled - requires VITE_GEMINI_API_KEY
+// import { AIFieldReport } from '@/components/features/dashboard/AIFieldReport';
 import { WeatherSummary } from '@/components/features/dashboard/WeatherSummary';
 import { AlertsOverview } from '@/components/features/dashboard/AlertsOverview';
 import { FieldMap } from '@/components/features/map/FieldMap';
@@ -47,8 +48,8 @@ const Dashboard = () => {
         {/* KPI Dashboard */}
         <DashboardKPIs />
 
-        {/* AI Field Brief - Main Feature */}
-        <AIFieldReport />
+        {/* AI Field Brief - Temporarily disabled (requires VITE_GEMINI_API_KEY) */}
+        {/* <AIFieldReport /> */}
 
         {/* Main Dashboard Grid - Map and Weather */}
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 sm:gap-8">

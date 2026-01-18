@@ -12,6 +12,7 @@ import NotFound from "./pages/NotFound";
 import Login from "./pages/Login";
 import Signup from "./pages/Signup";
 import { AdvancedMonitoring } from "./pages/AdvancedMonitoring";
+import FieldDiagnostics from "./pages/FieldDiagnostics";
 import { useAutoSync } from "@/hooks/useAutoSync";
 import { ProtectedRoute } from "@/components/ProtectedRoute";
 
@@ -124,6 +125,14 @@ const AppContent = () => {
             element={
               <ProtectedRoute requireFarm={true}>
                 <AdvancedMonitoring />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/field-diagnostics"
+            element={
+              <ProtectedRoute requireFarm={true}>
+                <FieldDiagnostics />
               </ProtectedRoute>
             }
           />

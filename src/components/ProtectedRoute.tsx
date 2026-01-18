@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from '@/hooks/useAuth';
-import { supabase } from '@/services/supabase';
+import { supabase, isSupabaseAvailable } from '@/services/supabase';
 import { Skeleton } from '@/components/ui/skeleton';
 
 interface ProtectedRouteProps {
@@ -18,6 +18,13 @@ export function ProtectedRoute({ children, requireFarm = false }: ProtectedRoute
   useEffect(() => {
     if (!requireFarm || !user) {
       setHasFarm(null);
+      return;
+    }
+
+    // If Supabase is not available, skip farm check (local development mode)
+    if (!isSupabaseAvailable() || !supabase) {
+      console.log('[ProtectedRoute] Supabase not configured - skipping farm check');
+      setHasFarm(true); // Allow access in local dev mode
       return;
     }
 

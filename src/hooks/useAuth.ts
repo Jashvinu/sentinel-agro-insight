@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { User, Session, AuthError } from '@supabase/supabase-js';
-import { supabase } from '@/services/supabase';
+import { supabase, isSupabaseAvailable } from '@/services/supabase';
 import { useNavigate } from 'react-router-dom';
 
 interface AuthState {
@@ -8,6 +8,16 @@ interface AuthState {
   session: Session | null;
   loading: boolean;
 }
+
+// Mock user for local development without Supabase
+const mockUser: User = {
+  id: 'local-dev-user',
+  email: 'dev@localhost',
+  app_metadata: {},
+  user_metadata: {},
+  aud: 'authenticated',
+  created_at: new Date().toISOString(),
+};
 
 export function useAuth() {
   const [authState, setAuthState] = useState<AuthState>({
@@ -18,6 +28,17 @@ export function useAuth() {
   const navigate = useNavigate();
 
   useEffect(() => {
+    // If Supabase is not available, use mock user for local development
+    if (!isSupabaseAvailable() || !supabase) {
+      console.log('[Auth] Supabase not configured - using mock user for local development');
+      setAuthState({
+        user: mockUser,
+        session: null,
+        loading: false,
+      });
+      return;
+    }
+
     // Get initial session
     supabase.auth.getSession().then(({ data: { session } }) => {
       setAuthState({
@@ -42,6 +63,9 @@ export function useAuth() {
   }, []);
 
   const signUp = async (email: string, password: string) => {
+    if (!isSupabaseAvailable() || !supabase) {
+      return { data: null, error: { message: 'Supabase not configured' } as AuthError };
+    }
     try {
       const { data, error } = await supabase.auth.signUp({
         email,
@@ -57,6 +81,9 @@ export function useAuth() {
   };
 
   const signIn = async (email: string, password: string) => {
+    if (!isSupabaseAvailable() || !supabase) {
+      return { data: null, error: { message: 'Supabase not configured' } as AuthError };
+    }
     try {
       const { data, error } = await supabase.auth.signInWithPassword({
         email,
@@ -72,6 +99,10 @@ export function useAuth() {
   };
 
   const signOut = async () => {
+    if (!isSupabaseAvailable() || !supabase) {
+      navigate('/login');
+      return;
+    }
     try {
       const { error } = await supabase.auth.signOut();
       if (error) throw error;

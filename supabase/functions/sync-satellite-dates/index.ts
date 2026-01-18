@@ -7,7 +7,6 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3';
 import * as satelliteUtils from '../_shared/satellite-utils.ts';
 import { getAllSatelliteDates, getIndicesForSatellite } from '../_shared/satellite-utils.ts';
 
-// @deno-types="npm:@types/google__earthengine"
 import ee from 'npm:@google/earthengine@1.6.13';
 
 // Get geoJsonToEarthEngine from the module (with fallback)

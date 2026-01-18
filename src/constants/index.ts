@@ -427,6 +427,11 @@ export const NAVIGATION_ITEMS = [
         label: 'Advanced Monitoring',
         href: '/advanced-monitoring',
     },
+    {
+        id: 'field-diagnostics',
+        label: 'Field Diagnostics',
+        href: '/field-diagnostics',
+    },
 ] as const;
 
 // Data Sources

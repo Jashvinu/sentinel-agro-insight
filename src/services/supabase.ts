@@ -1,23 +1,32 @@
-import { createClient } from '@supabase/supabase-js';
+import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
 // Get Supabase URL and anon key from environment variables
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL?.trim() || '';
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY?.trim() || '';
 
-if (!supabaseUrl || !supabaseAnonKey) {
+// Check if Supabase is configured
+const isSupabaseConfigured = Boolean(supabaseUrl && supabaseAnonKey);
+
+if (!isSupabaseConfigured) {
   console.warn(
-    '[Supabase] VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY must be set in environment variables.'
+    '[Supabase] Not configured - using local Express server instead. ' +
+    'Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to enable Supabase.'
   );
 }
 
-// Create Supabase client with authentication enabled
-export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
-  auth: {
-    persistSession: true,
-    autoRefreshToken: true,
-    detectSessionInUrl: true,
-  },
-});
+// Create Supabase client only if configured, otherwise create a mock
+export const supabase: SupabaseClient | null = isSupabaseConfigured
+  ? createClient(supabaseUrl, supabaseAnonKey, {
+      auth: {
+        persistSession: true,
+        autoRefreshToken: true,
+        detectSessionInUrl: true,
+      },
+    })
+  : null;
+
+// Helper to check if Supabase is available
+export const isSupabaseAvailable = (): boolean => supabase !== null;
 
 // Database types
 export type Geometry = 

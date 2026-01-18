@@ -66,6 +66,11 @@ export interface TrendMapLayer {
 export interface AdvancedMonitoringResponse {
     timeseries: AlgorithmTimeSeries[];
     trends?: TrendAnalysis[];
+    maps?: Record<string, {
+        urlFormat: string;
+        mapid: string;
+        token: string;
+    }>;
     metadata: {
         farmId: string;
         dateRange: { start: string; end: string };
@@ -74,6 +79,7 @@ export interface AdvancedMonitoringResponse {
         algorithmCount: number;
         aggregationLevel: string;
         processingDate: string;
+        imageCount?: number;
         cached?: boolean;
     };
 }
