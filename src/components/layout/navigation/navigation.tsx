@@ -5,16 +5,13 @@ import {
   Home,
   TrendingUp,
   Settings,
-  User,
   Satellite,
   Menu,
   X,
-  LogOut,
   Activity
 } from 'lucide-react';
 import { NAVIGATION_ITEMS, APP_CONFIG } from '@/constants';
 import { NavigationItem } from '@/types';
-import { useAuth } from '@/hooks/useAuth';
 import { Link, useLocation } from 'react-router-dom';
 
 interface NavigationProps {
@@ -29,7 +26,6 @@ export const Navigation: React.FC<NavigationProps> = ({
   className
 }) => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const { user, signOut } = useAuth();
 
   const handleNavigation = (page: string, href?: string) => {
     if (href) {
@@ -105,26 +101,11 @@ export const Navigation: React.FC<NavigationProps> = ({
           </div>
         </div>
 
+        {/* MVP Mode: Hide user/logout section */}
         <div className="flex items-center space-x-3">
           <Button variant="ghost" size="sm">
             <Settings className="w-4 h-4" />
           </Button>
-          {user && (
-            <div className="flex items-center space-x-2">
-              <span className="text-sm text-muted-foreground hidden sm:inline">
-                {user.email?.split('@')[0] || 'User'}
-              </span>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => signOut()}
-                className="flex items-center space-x-1"
-              >
-                <LogOut className="w-4 h-4" />
-                <span className="hidden sm:inline">Logout</span>
-              </Button>
-            </div>
-          )}
         </div>
       </nav>
 

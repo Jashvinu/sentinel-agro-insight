@@ -12,6 +12,7 @@ interface ProtectedRouteProps {
 /**
  * Default Evergreen Farm data for MVP mode
  * This farm is auto-seeded when no farms exist in localStorage
+ * Using actual field coordinates from Bangalore, Karnataka, India
  */
 const DEFAULT_EVERGREEN_FARM = {
   id: 'farm-1769529565115-xww13ef6h',
@@ -19,20 +20,22 @@ const DEFAULT_EVERGREEN_FARM = {
   geometry: {
     type: 'Polygon' as const,
     coordinates: [[
-      [-74.006, 40.7128],
-      [-74.004, 40.7128],
-      [-74.004, 40.7148],
-      [-74.006, 40.7148],
-      [-74.006, 40.7128]
+      [77.77333199305133, 12.392392446684909],
+      [77.77285377084087, 12.391034719901086],
+      [77.77415744218291, 12.390603704636632],
+      [77.77438732135664, 12.391302225016886],
+      [77.77376792469431, 12.391501801924363],
+      [77.77399141833513, 12.392187846379386],
+      [77.77333199305133, 12.392392446684909]
     ]]
   },
   bounds: {
-    minLng: -74.006,
-    minLat: 40.7128,
-    maxLng: -74.004,
-    maxLat: 40.7148
+    minLng: 77.77285377084087,
+    minLat: 12.390603704636632,
+    maxLng: 77.77438732135664,
+    maxLat: 12.392392446684909
   },
-  area_hectares: 4.4,
+  area_hectares: 0.15,
   user_id: 'mvp-demo-user',
   status: 'active',
   created_at: '2026-01-27T00:00:00.000Z',
