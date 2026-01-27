@@ -4,7 +4,7 @@
  * Supports threshold-based and trend-based detection.
  */
 
-import { buildApiUrl } from './api';
+import { buildApiUrl, getSupabaseFunctionHeaders } from './api';
 import { API_ENDPOINTS } from '@/constants';
 import * as turf from '@turf/turf';
 
@@ -109,7 +109,11 @@ export async function analyzeFarm(
     const polygon = JSON.stringify(geometry);
     const url = buildApiUrl(`/diagnostics?polygon=${encodeURIComponent(polygon)}&images=10`);
 
-    const response = await fetch(url);
+    const response = await fetch(url, {
+      headers: {
+        ...getSupabaseFunctionHeaders(),
+      },
+    });
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -290,7 +294,11 @@ async function fetchAllIndicesTimeSeries(
         `${API_ENDPOINTS.agriculturalIndices}?index=${index}&polygon=${encodeURIComponent(polygon)}&start=${startDate}&end=${endDate}&timeseries=true`
       );
 
-      const response = await fetch(url);
+      const response = await fetch(url, {
+        headers: {
+          ...getSupabaseFunctionHeaders(),
+        },
+      });
       if (!response.ok) {
         console.warn(`[Diagnostics] Failed to fetch ${index}: ${response.statusText}`);
         return { index, data: [] };

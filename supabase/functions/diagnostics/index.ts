@@ -1,16 +1,231 @@
 /**
- * Diagnostics Route
+ * Diagnostics Edge Function
  * Analyzes satellite data to detect problem areas on farms.
- * Returns grid cells with problem indicators for map visualization.
+ * Returns analysis results with problem indicators for map visualization.
  */
 
-import { Router, Request, Response } from 'express';
-import ee from '@google/earthengine';
-import { successResponse, errorResponse } from '../utils/response.js';
-import { evaluate, getMapIdWithRetry } from '../utils/earthEngine.js';
-import { geoJsonToEarthEngine, getMergedOpticalCollection } from '../shared/satelliteUtils.js';
+import ee from 'npm:@google/earthengine@1.6.13';
 
-const router = Router();
+// ============================================================================
+// INLINED SHARED UTILITIES (from _shared/cors.ts, _shared/response.ts, _shared/satellite-utils.ts)
+// ============================================================================
+
+// CORS Configuration
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+  'Access-Control-Allow-Credentials': 'true',
+};
+
+function handleCors(req: Request): Response | null {
+  if (req.method === 'OPTIONS') {
+    return new Response('ok', { headers: corsHeaders });
+  }
+  return null;
+}
+
+// Response Utilities
+function successResponse(data: any, status: number = 200): Response {
+  return new Response(
+    JSON.stringify({
+      success: true,
+      ...data,
+    }),
+    {
+      status,
+      headers: {
+        ...corsHeaders,
+        'Content-Type': 'application/json',
+      },
+    }
+  );
+}
+
+function errorResponse(
+  message: string,
+  status: number = 500,
+  error?: any
+): Response {
+  const response: any = {
+    success: false,
+    error: message,
+  };
+
+  if (error) {
+    response.details = error instanceof Error ? error.message : String(error);
+  }
+
+  return new Response(JSON.stringify(response), {
+    status,
+    headers: {
+      ...corsHeaders,
+      'Content-Type': 'application/json',
+    },
+  });
+}
+
+// Satellite Utils (from _shared/satellite-utils.ts)
+const SATELLITES = {
+  SENTINEL2: {
+    id: 'COPERNICUS/S2_SR_HARMONIZED',
+    name: 'Sentinel-2',
+    cloudProperty: 'CLOUDY_PIXEL_PERCENTAGE',
+    scaleFactor: 0.0001
+  },
+  LANDSAT8: {
+    id: 'LANDSAT/LC08/C02/T1_L2',
+    name: 'Landsat-8',
+    cloudProperty: 'CLOUD_COVER',
+    scaleFactor: 0.0000275,
+    offset: -0.2
+  },
+  LANDSAT9: {
+    id: 'LANDSAT/LC09/C02/T1_L2',
+    name: 'Landsat-9',
+    cloudProperty: 'CLOUD_COVER',
+    scaleFactor: 0.0000275,
+    offset: -0.2
+  }
+};
+
+function scaleSentinel2Bands(image: any, config: any): any {
+  return image
+    .select(['B2', 'B3', 'B4', 'B8', 'B11', 'B12'])
+    .multiply(config.scaleFactor)
+    .clamp(0, 1)
+    .toFloat();
+}
+
+function scaleLandsatBands(image: any, config: any): any {
+  const offset = config.offset ?? 0;
+  const denominator = Math.max(1 - offset, 1e-6);
+
+  const reflectance = image
+    .select(['SR_B2', 'SR_B3', 'SR_B4', 'SR_B5', 'SR_B6', 'SR_B7'])
+    .multiply(config.scaleFactor)
+    .add(offset);
+
+  return reflectance
+    .subtract(offset)
+    .divide(denominator)
+    .clamp(0, 1)
+    .toFloat();
+}
+
+function harmonizeLandsat(image: any, config: any): any {
+  const scaled = scaleLandsatBands(image, config)
+    .rename(['B2', 'B3', 'B4', 'B8', 'B11', 'B12']);
+
+  const propertiesToRemove = [
+    'system:bands',
+    'system:bands_names',
+    'system:bands_types',
+    'system:band_types'
+  ];
+
+  let properties = ee.List(image.propertyNames());
+  for (const prop of propertiesToRemove) {
+    properties = properties.remove(prop);
+  }
+
+  return ee.Image(scaled).copyProperties(image, properties);
+}
+
+function harmonizeSentinel2(image: any, config: any): any {
+  const scaled = scaleSentinel2Bands(image, config);
+
+  const propertiesToRemove = [
+    'system:bands',
+    'system:bands_names',
+    'system:bands_types',
+    'system:band_types'
+  ];
+
+  let properties = ee.List(image.propertyNames());
+  for (const prop of propertiesToRemove) {
+    properties = properties.remove(prop);
+  }
+
+  return ee.Image(scaled).copyProperties(image, properties);
+}
+
+function getMergedOpticalCollection(
+  poi: any,
+  startDate: string,
+  endDate: string,
+  maxCloudCover: number = 100
+): any {
+  const s2Collection = ee.ImageCollection(SATELLITES.SENTINEL2.id)
+    .filterBounds(poi)
+    .filterDate(startDate, endDate)
+    .filter(ee.Filter.lt(SATELLITES.SENTINEL2.cloudProperty, maxCloudCover))
+    .map((img: any) => {
+      const harmonized = harmonizeSentinel2(img, SATELLITES.SENTINEL2);
+      return harmonized
+        .set('satellite', 'Sentinel-2')
+        .set('system:time_start', img.get('system:time_start'))
+        .set('cloud_cover', img.get(SATELLITES.SENTINEL2.cloudProperty));
+    });
+
+  const l8Collection = ee.ImageCollection(SATELLITES.LANDSAT8.id)
+    .filterBounds(poi)
+    .filterDate(startDate, endDate)
+    .filter(ee.Filter.lt(SATELLITES.LANDSAT8.cloudProperty, maxCloudCover))
+    .map((img: any) => {
+      const harmonized = harmonizeLandsat(img, SATELLITES.LANDSAT8);
+      return harmonized
+        .set('satellite', 'Landsat-8')
+        .set('system:time_start', img.get('system:time_start'))
+        .set('cloud_cover', img.get(SATELLITES.LANDSAT8.cloudProperty));
+    });
+
+  const l9Collection = ee.ImageCollection(SATELLITES.LANDSAT9.id)
+    .filterBounds(poi)
+    .filterDate(startDate, endDate)
+    .filter(ee.Filter.lt(SATELLITES.LANDSAT9.cloudProperty, maxCloudCover))
+    .map((img: any) => {
+      const harmonized = harmonizeLandsat(img, SATELLITES.LANDSAT9);
+      return harmonized
+        .set('satellite', 'Landsat-9')
+        .set('system:time_start', img.get('system:time_start'))
+        .set('cloud_cover', img.get(SATELLITES.LANDSAT9.cloudProperty));
+    });
+
+  const mergedCollection = s2Collection
+    .merge(l8Collection)
+    .merge(l9Collection)
+    .sort('system:time_start');
+
+  return mergedCollection;
+}
+
+function geoJsonToEarthEngine(geometry: {
+  type: 'Polygon' | 'MultiPolygon';
+  coordinates: number[][][] | number[][][][];
+}): any {
+  if (geometry.type === 'Polygon') {
+    const coords = geometry.coordinates as number[][][];
+    return ee.Geometry.Polygon(coords);
+  } else if (geometry.type === 'MultiPolygon') {
+    const coords = geometry.coordinates as number[][][][];
+    return ee.Geometry.MultiPolygon(coords);
+  } else {
+    throw new Error(`Unsupported geometry type: ${geometry.type}`);
+  }
+}
+
+function evaluate(obj: any): Promise<any> {
+  return new Promise((resolve, reject) =>
+    obj.evaluate((result: any, error: any) =>
+      error ? reject(new Error(error)) : resolve(result)
+    )
+  );
+}
+
+// ============================================================================
+// DIAGNOSTICS LOGIC
+// ============================================================================
 
 // Diagnostic indices to analyze
 const DIAGNOSTIC_INDICES = ['nitrogen', 'moisture', 'ndvi', 'phosphorus'];
@@ -77,19 +292,73 @@ const INDEX_RANGES: Record<string, { min: number; max: number }> = {
   phosphorus: { min: 0, max: 100 },
 };
 
-/**
- * Pre-computed images shared across all indices
- */
 interface PrecomputedImages {
   composite: any;
   firstImage: any;
   lastImage: any;
 }
 
-/**
- * Process a single index - extracted for parallel execution
- * Uses pre-computed images and parallelizes internal operations
- */
+function authenticate(serviceAccount: any): Promise<void> {
+  return new Promise((resolve, reject) => {
+    ee.data.authenticateViaPrivateKey(
+      serviceAccount,
+      () =>
+        ee.initialize(
+          null,
+          null,
+          () => resolve(),
+          (error: any) => reject(new Error(error))
+        ),
+      (error: any) => reject(new Error(error))
+    );
+  });
+}
+
+function getMapId(image: any, vis: any): Promise<any> {
+  return new Promise((resolve, reject) => {
+    image.getMapId(vis, (obj: any, error: any) => {
+      if (error) {
+        reject(new Error(error));
+      } else {
+        resolve({
+          urlFormat: obj.urlFormat,
+          mapid: obj.mapid,
+          token: obj.token
+        });
+      }
+    });
+  });
+}
+
+async function getMapIdWithRetry(
+  image: any,
+  vis: any,
+  retries: number = 3,
+  delayMs: number = 1000
+): Promise<any> {
+  let attempt = 0;
+  while (attempt < retries) {
+    try {
+      return await getMapId(image, vis);
+    } catch (error: any) {
+      const message = error?.message || error?.toString?.() || '';
+      const shouldRetry =
+        message.includes('Visibility check was unavailable') ||
+        message.includes('Please retry the request');
+
+      attempt++;
+
+      if (!shouldRetry || attempt >= retries) {
+        throw error;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, delayMs * attempt));
+    }
+  }
+
+  throw new Error('Failed to obtain map ID after retries');
+}
+
 async function processIndex(
   index: string,
   precomputed: PrecomputedImages,
@@ -108,22 +377,18 @@ async function processIndex(
   console.log(`[Diagnostics] Processing ${index}...`);
   const indexStart = Date.now();
 
-  // Calculate index images from pre-computed base images
   const indexImage = calculator(precomputed.composite);
   const firstIndex = calculator(precomputed.firstImage);
   const lastIndex = calculator(precomputed.lastImage);
 
-  // Visualization parameters (needed for map tile)
   const visParams = {
     min: INDEX_RANGES[index].min,
     max: INDEX_RANGES[index].max,
     palette: INDEX_PALETTES[index],
   };
 
-  // Run all 4 operations in parallel for maximum performance
   const parallelOpsStart = Date.now();
   const [statsResult, firstStatsResult, lastStatsResult, mapResult] = await Promise.all([
-    // 1. Composite statistics
     (async () => {
       const start = Date.now();
       const stats = await evaluate(
@@ -142,7 +407,6 @@ async function processIndex(
       return stats;
     })(),
 
-    // 2. First image statistics (for trend)
     (async () => {
       const start = Date.now();
       try {
@@ -163,7 +427,6 @@ async function processIndex(
       }
     })(),
 
-    // 3. Last image statistics (for trend)
     (async () => {
       const start = Date.now();
       try {
@@ -184,7 +447,6 @@ async function processIndex(
       }
     })(),
 
-    // 4. Map tile generation
     (async () => {
       const start = Date.now();
       try {
@@ -201,18 +463,15 @@ async function processIndex(
 
   console.log(`[Diagnostics] ${index} parallel ops: ${Date.now() - parallelOpsStart}ms`);
 
-  // Extract statistics
-  const stats = statsResult;
+  const stats = statsResult || {};
   const mean = stats[`${index}_mean`] || stats['mean'] || 0;
   const min = stats[`${index}_min`] || stats['min'] || 0;
   const max = stats[`${index}_max`] || stats['max'] || 0;
   const stdDev = stats[`${index}_stdDev`] || stats['stdDev'] || 0;
 
-  // Check thresholds
   const threshold = THRESHOLDS[index];
   const belowThreshold = mean < threshold.warning;
 
-  // Calculate trend from first/last stats
   let trend = 0;
   let trendDetected = false;
 
@@ -240,7 +499,6 @@ async function processIndex(
     mapData: mapResult,
   };
 
-  // Check if this is a problem
   let problem: any | null = null;
   if (belowThreshold || trendDetected) {
     problem = {
@@ -255,52 +513,85 @@ async function processIndex(
   return { index, result, problem };
 }
 
-/**
- * GET /diagnostics
- * Analyze a farm for problem areas
- */
-router.get('/', async (req: Request, res: Response) => {
+Deno.serve(async (req) => {
+  const corsResponse = handleCors(req);
+  if (corsResponse) return corsResponse;
+
+  if (req.method !== 'GET') {
+    return errorResponse('Method not allowed', 405);
+  }
+
   const requestStart = Date.now();
   console.log('[Diagnostics] Request started');
 
   try {
-    const polygonParam = req.query.polygon as string;
-    const indicesParam = (req.query.indices as string) || DIAGNOSTIC_INDICES.join(',');
-    const numImages = parseInt(req.query.images as string) || 10;
+    const url = new URL(req.url);
+    const polygonParam = url.searchParams.get('polygon');
+    const indicesParam = url.searchParams.get('indices') || DIAGNOSTIC_INDICES.join(',');
+    const numImages = parseInt(url.searchParams.get('images') || '10');
 
     if (!polygonParam) {
-      return errorResponse(res, 'polygon parameter is required', 400);
+      return errorResponse('polygon parameter is required', 400);
     }
 
-    // Parse polygon
     let geometry: any;
     try {
       geometry = JSON.parse(polygonParam);
     } catch (e) {
-      return errorResponse(res, 'Invalid polygon JSON', 400);
+      return errorResponse('Invalid polygon JSON', 400);
     }
 
-    // Convert to Earth Engine geometry
+    let serviceAccountKey: any;
+    const googleCredsJson = Deno.env.get('GOOGLE_CREDENTIALS_JSON');
+
+    if (googleCredsJson) {
+      try {
+        const parsed = JSON.parse(googleCredsJson);
+        if (parsed.private_key && typeof parsed.private_key === 'string') {
+          parsed.private_key = parsed.private_key.replace(/\\n/g, '\n');
+        }
+        serviceAccountKey = parsed;
+      } catch (e: any) {
+        throw new Error(`Invalid GOOGLE_CREDENTIALS_JSON: ${e.message}`);
+      }
+    } else {
+      serviceAccountKey = {
+        "type": "service_account",
+        "project_id": Deno.env.get('GOOGLE_PROJECT_ID'),
+        "private_key_id": Deno.env.get('GOOGLE_PRIVATE_KEY_ID'),
+        "private_key": Deno.env.get('GOOGLE_PRIVATE_KEY')?.replace(/\\n/g, '\n'),
+        "client_email": Deno.env.get('GOOGLE_CLIENT_EMAIL'),
+        "client_id": Deno.env.get('GOOGLE_CLIENT_ID'),
+        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+        "token_uri": "https://oauth2.googleapis.com/token",
+        "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+        "client_x509_cert_url": Deno.env.get('GOOGLE_CLIENT_X509_CERT_URL'),
+        "universe_domain": "googleapis.com"
+      };
+    }
+
+    if (!serviceAccountKey.project_id || !serviceAccountKey.private_key || !serviceAccountKey.client_email) {
+      throw new Error("Missing required Google Cloud credentials in environment variables");
+    }
+
+    await authenticate(serviceAccountKey);
+    console.log('[Diagnostics] Earth Engine authenticated successfully');
+
     const eeGeometry = geoJsonToEarthEngine(geometry);
 
-    // Parse requested indices
     const indices = indicesParam.split(',').filter(i => DIAGNOSTIC_INDICES.includes(i));
     console.log(`[Diagnostics] Processing indices: ${indices.join(', ')}`);
 
-    // Calculate date range (last 90 days)
     const endDate = new Date().toISOString().split('T')[0];
     const startDate = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
     console.log(`[Diagnostics] Date range: ${startDate} to ${endDate}`);
 
-    // Fetch satellite imagery
     const collectionStart = Date.now();
     const collection = getMergedOpticalCollection(eeGeometry, startDate, endDate);
 
-    // Sort by date and limit to last N images
     const sortedCollection = collection.sort('system:time_start', false).limit(numImages);
     console.log(`[Diagnostics] Collection setup: ${Date.now() - collectionStart}ms`);
 
-    // Pre-compute shared images ONCE (instead of per-index)
     const precomputeStart = Date.now();
     const precomputed: PrecomputedImages = {
       composite: sortedCollection.median(),
@@ -309,7 +600,6 @@ router.get('/', async (req: Request, res: Response) => {
     };
     console.log(`[Diagnostics] Pre-computed shared images: ${Date.now() - precomputeStart}ms`);
 
-    // Process all indices in parallel for performance
     const timings: Record<string, number> = {};
     const parallelStart = Date.now();
     console.log(`[Diagnostics] Starting parallel processing of ${indices.length} indices...`);
@@ -320,7 +610,6 @@ router.get('/', async (req: Request, res: Response) => {
 
     console.log(`[Diagnostics] Parallel processing complete: ${Date.now() - parallelStart}ms`);
 
-    // Collect results
     const analysisResults: Record<string, any> = {};
     const problems: any[] = [];
 
@@ -333,7 +622,6 @@ router.get('/', async (req: Request, res: Response) => {
       }
     }
 
-    // Log timing summary
     const totalTime = Date.now() - requestStart;
     console.log('[Diagnostics] === TIMING SUMMARY ===');
     console.log(`[Diagnostics] Total request time: ${totalTime}ms`);
@@ -343,8 +631,7 @@ router.get('/', async (req: Request, res: Response) => {
     }
     console.log('[Diagnostics] ======================');
 
-    // Build response
-    return successResponse(res, {
+    return successResponse({
       analysis: analysisResults,
       problems,
       metadata: {
@@ -358,8 +645,6 @@ router.get('/', async (req: Request, res: Response) => {
   } catch (error: any) {
     const totalTime = Date.now() - requestStart;
     console.error(`[Diagnostics] Error after ${totalTime}ms:`, error);
-    return errorResponse(res, error.message || 'Failed to analyze farm', 500);
+    return errorResponse(error.message || 'Failed to analyze farm', 500, error);
   }
 });
-
-export default router;

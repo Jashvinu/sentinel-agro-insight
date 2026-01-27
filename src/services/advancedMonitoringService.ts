@@ -23,17 +23,11 @@ export const advancedMonitoringService = {
     ): Promise<AdvancedMonitoringResponse> {
         const url = buildApiUrl('/advanced-monitoring');
 
-        // Check if using local server (localhost or 127.0.0.1)
-        const isLocalServer = url.includes('localhost') || url.includes('127.0.0.1');
-
-        // Only include Supabase headers if not using local server
+        // Include Supabase headers for authentication
         const headers: Record<string, string> = {
             'Content-Type': 'application/json',
+            ...getSupabaseFunctionHeaders(),
         };
-
-        if (!isLocalServer) {
-            Object.assign(headers, getSupabaseFunctionHeaders());
-        }
 
         const response = await fetch(url, {
             method: 'POST',

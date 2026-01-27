@@ -1,5 +1,6 @@
 {
   "projects": {
+    "frontend": "farmview-1uako",
     "default": "farmview-1uako"
   }
 }

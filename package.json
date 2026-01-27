@@ -19,9 +19,12 @@
     "supabase:stop": "supabase stop",
     "supabase:functions": "supabase functions serve",
     "deploy:field-overview": "./scripts/deploy-field-overview.sh",
-    "deploy:frontend": "./scripts/deploy-firebase.sh",
+    "deploy:frontend": "npm run build && firebase deploy --only hosting --project frontend",
+    "deploy:backend": "vercel --prod",
+    "deploy:all": "npm run deploy:backend && npm run deploy:frontend",
+    "vercel:dev": "vercel dev",
     "deploy:hosting": "npm run build && firebase deploy --only hosting",
-    "firebase:deploy": "./scripts/deploy-firebase.sh",
+    "firebase:deploy": "npm run deploy:frontend",
     "firebase:serve": "firebase serve",
     "server:install": "cd server && npm install",
     "server:dev": "cd server && npm run dev",
@@ -59,6 +62,7 @@
     "tailwindcss-animate": "^1.0.7"
   },
   "devDependencies": {
+    "@vercel/node": "^3.0.0",
     "@eslint/js": "^9.32.0",
     "@tailwindcss/typography": "^0.5.16",
     "@types/node": "^22.16.5",

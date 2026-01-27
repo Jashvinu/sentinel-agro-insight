@@ -15,6 +15,7 @@ export const API_ENDPOINTS = {
     health: '/health',
     alerts: '/alerts',
     analytics: '/analytics',
+    diagnostics: '/diagnostics',
 } as const;
 
 // Map Configuration

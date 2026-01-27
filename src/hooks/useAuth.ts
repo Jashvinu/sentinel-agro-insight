@@ -1,6 +1,5 @@
 import { useState, useEffect } from 'react';
 import { User, Session, AuthError } from '@supabase/supabase-js';
-import { supabase, isSupabaseAvailable } from '@/services/supabase';
 import { useNavigate } from 'react-router-dom';
 
 interface AuthState {
@@ -9,16 +8,20 @@ interface AuthState {
   loading: boolean;
 }
 
-// Mock user for local development without Supabase
-const mockUser: User = {
-  id: 'local-dev-user',
-  email: 'dev@localhost',
+// Mock user for MVP mode - no login required
+const mvpDemoUser: User = {
+  id: 'mvp-demo-user',
+  email: 'demo@evergreenfarms.mvp',
   app_metadata: {},
-  user_metadata: {},
+  user_metadata: { name: 'Evergreen Farms Demo' },
   aud: 'authenticated',
   created_at: new Date().toISOString(),
 };
 
+/**
+ * useAuth hook for MVP mode
+ * Always returns the MVP demo user without requiring authentication
+ */
 export function useAuth() {
   const [authState, setAuthState] = useState<AuthState>({
     user: null,
@@ -28,88 +31,29 @@ export function useAuth() {
   const navigate = useNavigate();
 
   useEffect(() => {
-    // If Supabase is not available, use mock user for local development
-    if (!isSupabaseAvailable() || !supabase) {
-      console.log('[Auth] Supabase not configured - using mock user for local development');
-      setAuthState({
-        user: mockUser,
-        session: null,
-        loading: false,
-      });
-      return;
-    }
-
-    // Get initial session
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setAuthState({
-        user: session?.user ?? null,
-        session,
-        loading: false,
-      });
+    // MVP mode: immediately set demo user without any auth checks
+    console.log('[Auth] MVP mode - using demo user for Evergreen Farms');
+    setAuthState({
+      user: mvpDemoUser,
+      session: null,
+      loading: false,
     });
-
-    // Listen for auth changes
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
-      setAuthState({
-        user: session?.user ?? null,
-        session,
-        loading: false,
-      });
-    });
-
-    return () => subscription.unsubscribe();
   }, []);
 
-  const signUp = async (email: string, password: string) => {
-    if (!isSupabaseAvailable() || !supabase) {
-      return { data: null, error: { message: 'Supabase not configured' } as AuthError };
-    }
-    try {
-      const { data, error } = await supabase.auth.signUp({
-        email,
-        password,
-      });
-
-      if (error) throw error;
-
-      return { data, error: null };
-    } catch (error) {
-      return { data: null, error: error as AuthError };
-    }
+  // Disabled auth functions for MVP mode
+  const signUp = async (_email: string, _password: string) => {
+    console.log('[Auth] MVP mode - signUp disabled');
+    return { data: null, error: { message: 'MVP mode - authentication disabled' } as AuthError };
   };
 
-  const signIn = async (email: string, password: string) => {
-    if (!isSupabaseAvailable() || !supabase) {
-      return { data: null, error: { message: 'Supabase not configured' } as AuthError };
-    }
-    try {
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email,
-        password,
-      });
-
-      if (error) throw error;
-
-      return { data, error: null };
-    } catch (error) {
-      return { data: null, error: error as AuthError };
-    }
+  const signIn = async (_email: string, _password: string) => {
+    console.log('[Auth] MVP mode - signIn disabled, using demo user');
+    return { data: null, error: { message: 'MVP mode - authentication disabled' } as AuthError };
   };
 
   const signOut = async () => {
-    if (!isSupabaseAvailable() || !supabase) {
-      navigate('/login');
-      return;
-    }
-    try {
-      const { error } = await supabase.auth.signOut();
-      if (error) throw error;
-      navigate('/login');
-    } catch (error) {
-      console.error('Error signing out:', error);
-    }
+    console.log('[Auth] MVP mode - signOut disabled');
+    navigate('/');
   };
 
   return {

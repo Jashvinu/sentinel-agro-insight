@@ -2,14 +2,13 @@ import { API_ENDPOINTS, ERROR_MESSAGES } from '@/constants';
 import { ApiResponse, ApiError, EarthEngineResponse } from '@/types';
 import { retry } from '@/utils';
 
-const DEFAULT_LOCAL_API_BASE_URL = 'http://127.0.0.1:3001';
 const VALID_PROTOCOLS = new Set(['http:', 'https:']);
 const URL_MATCHER = /^https?:\/\//i;
 
 const stripTrailingSlash = (value: string): string => value.replace(/\/+$/, '');
 
 const resolveApiBaseUrl = (): string => {
-    // Priority 1: Use VITE_API_BASE_URL if set (this should point to Supabase)
+    // Priority 1: Use VITE_API_BASE_URL if set
     const envValue = import.meta.env.VITE_API_BASE_URL?.trim();
     if (envValue) {
         try {
@@ -26,7 +25,14 @@ const resolveApiBaseUrl = (): string => {
         }
     }
 
-    // Priority 2: Fallback to Supabase URL (from VITE_SUPABASE_URL)
+    // Priority 2: Use Vercel API URL (for production)
+    const vercelUrl = import.meta.env.VITE_VERCEL_API_URL?.trim();
+    if (vercelUrl) {
+        console.log('[ApiService] Using Vercel API:', vercelUrl);
+        return stripTrailingSlash(vercelUrl);
+    }
+
+    // Priority 3: Fallback to Supabase URL (from VITE_SUPABASE_URL)
     const supabaseUrl = import.meta.env.VITE_SUPABASE_URL?.trim();
     if (supabaseUrl) {
         // Construct Supabase Edge Functions URL
@@ -35,7 +41,7 @@ const resolveApiBaseUrl = (): string => {
         return functionsUrl;
     }
 
-    // Priority 3: Fallback to window origin or default Supabase
+    // Priority 4: Fallback to window origin
     if (typeof window !== 'undefined') {
         const fallback = stripTrailingSlash(`${window.location.protocol}//${window.location.host}`);
         console.warn(
@@ -66,24 +72,7 @@ export const getSupabaseFunctionHeaders = (): Record<string, string> => {
 };
 
 export const buildApiUrl = (path = ''): string => {
-    // Special handling for advanced-monitoring: use local server in development
-    // All other endpoints use Supabase Edge Functions
-    const isAdvancedMonitoring = path === '/advanced-monitoring' || 
-                                 path === 'advanced-monitoring' || 
-                                 path.includes('advanced-monitoring');
-    
-    if (isAdvancedMonitoring) {
-        if (typeof window !== 'undefined') {
-            const { hostname } = window.location;
-            if (hostname === 'localhost' || hostname === '127.0.0.1' || import.meta.env.DEV) {
-                const localUrl = `${DEFAULT_LOCAL_API_BASE_URL}/advanced-monitoring`;
-                console.log('[ApiService] Using local server for advanced-monitoring:', localUrl);
-                return localUrl;
-            }
-        }
-    }
-
-    // For all other endpoints, use Supabase Edge Functions
+    // For all endpoints, use the resolved API base URL (Supabase Edge Functions)
     if (!path) {
         return API_BASE_URL;
     }
@@ -117,9 +106,13 @@ class HttpClient {
     ): Promise<T> {
         const url = buildApiUrl(endpoint);
 
+        // Include Supabase auth headers for all requests
+        const supabaseHeaders = getSupabaseFunctionHeaders();
+
         const config: RequestInit = {
             headers: {
                 'Content-Type': 'application/json',
+                ...supabaseHeaders,
                 ...options.headers,
             },
             ...options,

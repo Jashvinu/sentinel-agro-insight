@@ -1,71 +1,90 @@
 import { useEffect, useState } from 'react';
-import { Navigate, useLocation } from 'react-router-dom';
-import { useAuth } from '@/hooks/useAuth';
-import { supabase, isSupabaseAvailable } from '@/services/supabase';
 import { Skeleton } from '@/components/ui/skeleton';
+
+// Local storage key for farms (same as farmService)
+const FARMS_STORAGE_KEY = 'sentinel_farms';
 
 interface ProtectedRouteProps {
   children: React.ReactNode;
-  requireFarm?: boolean; // If true, redirect to draw-polygon if user has no farms
+  requireFarm?: boolean; // If true, ensure default farm exists
 }
 
+/**
+ * Default Evergreen Farm data for MVP mode
+ * This farm is auto-seeded when no farms exist in localStorage
+ */
+const DEFAULT_EVERGREEN_FARM = {
+  id: 'farm-1769529565115-xww13ef6h',
+  name: 'Evergreen Farms',
+  geometry: {
+    type: 'Polygon' as const,
+    coordinates: [[
+      [-74.006, 40.7128],
+      [-74.004, 40.7128],
+      [-74.004, 40.7148],
+      [-74.006, 40.7148],
+      [-74.006, 40.7128]
+    ]]
+  },
+  bounds: {
+    minLng: -74.006,
+    minLat: 40.7128,
+    maxLng: -74.004,
+    maxLat: 40.7148
+  },
+  area_hectares: 4.4,
+  user_id: 'mvp-demo-user',
+  status: 'active',
+  created_at: '2026-01-27T00:00:00.000Z',
+  updated_at: '2026-01-27T00:00:00.000Z'
+};
+
+/**
+ * Check if farms exist in localStorage
+ */
+function hasLocalFarms(): boolean {
+  try {
+    const data = localStorage.getItem(FARMS_STORAGE_KEY);
+    if (data) {
+      const farms = JSON.parse(data);
+      return Array.isArray(farms) && farms.length > 0;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Seed default Evergreen Farm into localStorage if none exist
+ */
+function seedDefaultFarm(): void {
+  try {
+    if (!hasLocalFarms()) {
+      console.log('[ProtectedRoute] No farms found - seeding default Evergreen Farm for MVP');
+      localStorage.setItem(FARMS_STORAGE_KEY, JSON.stringify([DEFAULT_EVERGREEN_FARM]));
+    }
+  } catch (error) {
+    console.error('[ProtectedRoute] Error seeding default farm:', error);
+  }
+}
+
+/**
+ * ProtectedRoute for MVP mode - bypasses login and ensures default farm exists
+ * All routes are accessible without authentication
+ */
 export function ProtectedRoute({ children, requireFarm = false }: ProtectedRouteProps) {
-  const { user, loading } = useAuth();
-  const location = useLocation();
-  const [hasFarm, setHasFarm] = useState<boolean | null>(null);
-  const [checkingFarm, setCheckingFarm] = useState(false);
+  const [isReady, setIsReady] = useState(false);
 
   useEffect(() => {
-    if (!requireFarm || !user) {
-      setHasFarm(null);
-      return;
+    // Seed default farm if required and none exist
+    if (requireFarm) {
+      seedDefaultFarm();
     }
+    setIsReady(true);
+  }, [requireFarm]);
 
-    // If Supabase is not available, skip farm check (local development mode)
-    if (!isSupabaseAvailable() || !supabase) {
-      console.log('[ProtectedRoute] Supabase not configured - skipping farm check');
-      setHasFarm(true); // Allow access in local dev mode
-      return;
-    }
-
-    const checkFarm = async () => {
-      setCheckingFarm(true);
-      try {
-        // First try to get farms with user_id
-        let { data, error } = await supabase
-          .from('farms')
-          .select('id')
-          .eq('user_id', user.id)
-          .limit(1);
-
-        // If no farms found with user_id, check if user_id column exists
-        // If column doesn't exist or query fails, allow access (backward compatibility)
-        if (error) {
-          // If error is about column not existing, check all farms (backward compatibility)
-          if (error.message?.includes('column') || error.code === '42703') {
-            const { data: allFarms } = await supabase
-              .from('farms')
-              .select('id')
-              .limit(1);
-            setHasFarm(allFarms && allFarms.length > 0);
-          } else {
-            setHasFarm(false);
-          }
-        } else {
-          setHasFarm(data && data.length > 0);
-        }
-      } catch (error) {
-        // On error, allow access (backward compatibility)
-        setHasFarm(true);
-      } finally {
-        setCheckingFarm(false);
-      }
-    };
-
-    checkFarm();
-  }, [user, requireFarm]);
-
-  if (loading || (requireFarm && checkingFarm)) {
+  if (!isReady) {
     return (
       <div className="flex items-center justify-center min-h-screen">
         <div className="space-y-4 w-full max-w-md">
@@ -77,16 +96,7 @@ export function ProtectedRoute({ children, requireFarm = false }: ProtectedRoute
     );
   }
 
-  if (!user) {
-    // Redirect to login, but save the attempted location
-    return <Navigate to="/login" state={{ from: location }} replace />;
-  }
-
-  // If farm is required and user has no farms, redirect to draw-polygon
-  if (requireFarm && hasFarm === false) {
-    return <Navigate to="/draw-polygon" replace />;
-  }
-
+  // MVP mode: always render children without authentication
   return <>{children}</>;
 }
 

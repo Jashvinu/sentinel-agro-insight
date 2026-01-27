@@ -33,6 +33,9 @@ test-api.ipynb
 *-credentials.json
 avid-infinity-*.json
 wrkfarm-*.json
+.env
+.env.*
+.firebase/
 
 # Server
 server/.env

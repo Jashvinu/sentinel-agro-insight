@@ -3,14 +3,12 @@ import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { Skeleton } from "@/components/ui/skeleton";
 import Dashboard from "./pages/Dashboard";
 import YieldPrediction from "./pages/YieldPrediction";
 import DrawPolygon from "./pages/DrawPolygon";
 import NotFound from "./pages/NotFound";
-import Login from "./pages/Login";
-import Signup from "./pages/Signup";
 import { AdvancedMonitoring } from "./pages/AdvancedMonitoring";
 import FieldDiagnostics from "./pages/FieldDiagnostics";
 import { useAutoSync } from "@/hooks/useAutoSync";
@@ -91,11 +89,11 @@ const AppContent = () => {
     <BrowserRouter>
       <Suspense fallback={<LoadingFallback />}>
         <Routes>
-          {/* Public routes */}
-          <Route path="/login" element={<Login />} />
-          <Route path="/signup" element={<Signup />} />
+          {/* MVP Mode: Login/Signup routes redirect to dashboard */}
+          <Route path="/login" element={<Navigate to="/dashboard" replace />} />
+          <Route path="/signup" element={<Navigate to="/dashboard" replace />} />
 
-          {/* Protected routes */}
+          {/* Protected routes - MVP mode bypasses auth */}
           <Route
             path="/"
             element={
