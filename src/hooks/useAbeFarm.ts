@@ -9,21 +9,18 @@ interface Farm {
   area_hectares?: number;
 }
 
-// Default Jash farm polygon data
-const DEFAULT_JASH_FARM = {
-  id: 'df43eedf-850d-454c-9fbf-36a052be10c0',
-  name: 'Jash farm',
+// Default Evergreen Farms polygon data
+const DEFAULT_FARM = {
+  id: 'd556697f-f6a0-457e-b5f8-61657c65c104',
+  name: 'Evergreen Farms',
   geometry: {
-    type: 'Polygon' as const,
-    coordinates: [[
-      [-77.84787380620527, 40.760804082400966],
-      [-77.8460000532441, 40.758886478177885],
-      [-77.8438098442277, 40.76055807705745],
-      [-77.84583349742549, 40.76257024787489],
-      [-77.84787380620527, 40.760804082400966]
-    ]]
+    type: 'MultiPolygon' as const,
+    coordinates: [
+      [[[-78.09880022071837,40.65864666584693],[-78.09917082015923,40.657905478380286],[-78.10028261848186,40.65693425475189],[-78.10011416419079,40.65578410322158],[-78.10125965337149,40.65417385776789],[-78.09940665616713,40.652512452677996],[-78.09944034702522,40.650697639844],[-78.0995414196001,40.65016085475858],[-78.09482469944236,40.64757911378487],[-78.09250003022157,40.64995636406658],[-78.09243264850475,40.65074876200808],[-78.09054596044164,40.652154606166874],[-78.08876034495346,40.65102993320929],[-78.08724425633122,40.652154606166874],[-78.09880022071837,40.65864666584693]]],
+      [[[-78.06158287165816,40.6713457913508],[-78.05965737181967,40.670419667896795],[-78.05322338455537,40.67262809489833],[-78.05477317710816,40.674693976521866],[-78.06158287165816,40.6713457913508]]]
+    ]
   },
-  area_hectares: 12.5
+  area_hectares: 85.0
 };
 
 /**
@@ -77,23 +74,28 @@ export function useAbeFarm() {
           }
         }
 
-        // Ensure Jash farm exists
-        const jashFarm = allFarms.find(f => f.id === DEFAULT_JASH_FARM.id || f.name === 'Jash farm');
-        if (!jashFarm && allFarms.length === 0) {
-          // Add default Jash farm if no farms exist
-          allFarms.push({
-            ...DEFAULT_JASH_FARM,
-            user_id: 'local-dev-user',
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-          } as any);
-          console.log('[useAbeFarm] Added default Jash farm');
+        // Always ensure Evergreen Farms exists with correct geometry
+        const existingIdx = allFarms.findIndex(f => f.id === DEFAULT_FARM.id || f.name === 'Evergreen Farms');
+        const defaultFarmEntry = {
+          ...DEFAULT_FARM,
+          user_id: 'local-dev-user',
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        } as any;
+        if (existingIdx >= 0) {
+          // Replace with correct geometry (in case localStorage has stale data)
+          allFarms[existingIdx] = defaultFarmEntry;
+          console.log('[useAbeFarm] Updated Evergreen Farms geometry');
+        } else {
+          // Add if not found
+          allFarms.unshift(defaultFarmEntry);
+          console.log('[useAbeFarm] Added default Evergreen Farms');
         }
 
         setFarms(allFarms as Farm[]);
 
         // Prioritize Jash farm, then first available
-        const priorityFarm = allFarms.find(f => f.id === DEFAULT_JASH_FARM.id || f.name === 'Jash farm') || allFarms[0];
+        const priorityFarm = allFarms.find(f => f.id === DEFAULT_FARM.id || f.name === 'Evergreen Farms') || allFarms[0];
         if (priorityFarm) {
           setFarmId(priorityFarm.id);
           setFarm(priorityFarm as Farm);

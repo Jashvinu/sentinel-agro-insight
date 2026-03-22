@@ -16,11 +16,13 @@ import { AlertTriangle, TrendingDown, AlertCircle } from 'lucide-react';
 interface DiagnosticLegendProps {
   problems: ProblemSummary[];
   hasOverlaps: boolean;
+  totalCells?: number;
 }
 
 export const DiagnosticLegend: React.FC<DiagnosticLegendProps> = ({
   problems,
   hasOverlaps,
+  totalCells,
 }) => {
   if (problems.length === 0) {
     return (
@@ -54,7 +56,7 @@ export const DiagnosticLegend: React.FC<DiagnosticLegendProps> = ({
       </CardHeader>
       <CardContent className="space-y-3">
         {problems.map((problem) => (
-          <LegendItem key={problem.index} problem={problem} />
+          <LegendItem key={problem.index} problem={problem} totalCells={totalCells} />
         ))}
 
         {/* Multiple problems indicator */}
@@ -84,9 +86,10 @@ export const DiagnosticLegend: React.FC<DiagnosticLegendProps> = ({
 
 interface LegendItemProps {
   problem: ProblemSummary;
+  totalCells?: number;
 }
 
-const LegendItem: React.FC<LegendItemProps> = ({ problem }) => {
+const LegendItem: React.FC<LegendItemProps> = ({ problem, totalCells }) => {
   const color = getIndexColor(problem.index);
 
   const getTypeIcon = () => {
@@ -129,7 +132,7 @@ const LegendItem: React.FC<LegendItemProps> = ({ problem }) => {
           </Badge>
         </div>
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
-          <span>{problem.cellCount} cells affected</span>
+          <span>{problem.cellCount} cells{totalCells ? ` (${Math.round((problem.cellCount / totalCells) * 100)}%)` : ''}</span>
           {problem.avgValue !== undefined && (
             <span>• Avg: {problem.avgValue.toFixed(1)}</span>
           )}

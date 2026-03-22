@@ -20,7 +20,7 @@ export const API_ENDPOINTS = {
 
 // Map Configuration
 export const MAP_CONFIG = {
-    defaultCenter: [77.77333199305133, 12.392392446684909] as [number, number],
+    defaultCenter: [-78.093, 40.653] as [number, number],
     defaultZoom: 15,
     maxZoom: 20,
     minZoom: 10,
@@ -31,16 +31,13 @@ export const MAP_CONFIG = {
 // Field Boundaries (POI)
 export const FIELD_BOUNDARIES = {
     coordinates: [
-        [77.77333199305133, 12.392392446684909],
-        [77.77285377084087, 12.391034719901086],
-        [77.77415744218291, 12.390603704636632],
-        [77.77438732135664, 12.391302225016886],
-        [77.77376792469431, 12.391501801924363],
-        [77.77399141833513, 12.392187846379386],
-        [77.77333199305133, 12.392392446684909],
+        [-78.09880022071837, 40.65864666584693],
+        [-78.09482469944236, 40.64757911378487],
+        [-78.08724425633122, 40.652154606166874],
+        [-78.09880022071837, 40.65864666584693],
     ],
-    area: 0.15, // hectares
-    location: 'Bangalore, Karnataka, India',
+    area: 85.0, // hectares
+    location: 'Centre County, Pennsylvania, USA',
 } as const;
 
 // Satellite Data Configuration
@@ -59,8 +56,8 @@ export const SATELLITE_CONFIG = {
 export const WEATHER_CONFIG = {
     updateInterval: 300000, // 5 minutes
     defaultLocation: {
-        lat: 12.392392446684909,
-        lon: 77.77333199305133,
+        lat: 40.653,
+        lon: -78.093,
     },
     units: 'metric',
 } as const;

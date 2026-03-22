@@ -230,23 +230,64 @@ function evaluate(obj: any): Promise<any> {
 // Diagnostic indices to analyze
 const DIAGNOSTIC_INDICES = ['nitrogen', 'moisture', 'ndvi', 'phosphorus'];
 
-// Thresholds for problem detection
-const THRESHOLDS: Record<string, { low: number; warning: number }> = {
-  nitrogen: { low: 100, warning: 150 },     // kg N/ha
-  moisture: { low: 15, warning: 25 },       // % volumetric
-  ndvi: { low: 0.3, warning: 0.5 },         // index (0-1)
-  phosphorus: { low: 30, warning: 50 },     // kg P₂O₅/ha
+// Season-aware thresholds for problem detection
+// Adjusted for crop phenology: dormant winter fields should not trigger alerts
+type Season = 'winter' | 'spring' | 'summer' | 'fall';
+
+function getCurrentSeason(): Season {
+  const month = new Date().getMonth();
+  if (month >= 2 && month <= 4) return 'spring';
+  if (month >= 5 && month <= 7) return 'summer';
+  if (month >= 8 && month <= 10) return 'fall';
+  return 'winter';
+}
+
+const SEASONAL_THRESHOLDS: Record<Season, Record<string, { low: number; warning: number }>> = {
+  winter: {
+    nitrogen: { low: 15, warning: 30 },
+    moisture: { low: 2, warning: 5 },
+    ndvi: { low: 0.02, warning: 0.05 },      // MSAVI2 - bare soil/dormant
+    phosphorus: { low: 4, warning: 10 },
+  },
+  spring: {
+    nitrogen: { low: 40, warning: 65 },
+    moisture: { low: 6, warning: 10 },
+    ndvi: { low: 0.08, warning: 0.15 },      // MSAVI2 - early growth
+    phosphorus: { low: 10, warning: 20 },
+  },
+  summer: {
+    nitrogen: { low: 60, warning: 90 },
+    moisture: { low: 8, warning: 14 },
+    ndvi: { low: 0.12, warning: 0.20 },      // MSAVI2 - peak canopy
+    phosphorus: { low: 15, warning: 28 },
+  },
+  fall: {
+    nitrogen: { low: 30, warning: 50 },
+    moisture: { low: 5, warning: 9 },
+    ndvi: { low: 0.06, warning: 0.12 },      // MSAVI2 - senescence
+    phosphorus: { low: 8, warning: 16 },
+  },
 };
 
+function getSeasonalThresholds(): Record<string, { low: number; warning: number }> {
+  return SEASONAL_THRESHOLDS[getCurrentSeason()];
+}
+
 // Trend detection threshold
-const TREND_THRESHOLD_PERCENT = -15; // 15% decline triggers alert
+const TREND_THRESHOLD_PERCENT = -30; // 30% decline triggers alert
 
 // Index calculation functions
 const INDEX_CALCULATORS: Record<string, (image: any) => any> = {
   ndvi: (image: any) => {
+    // MSAVI2 - Modified Soil-Adjusted Vegetation Index
+    // Better than NDVI for sparse/dormant vegetation: corrects for soil reflectance
+    // Formula: (2*NIR + 1 - sqrt((2*NIR+1)^2 - 8*(NIR-RED))) / 2
     const nir = image.select('B8');
     const red = image.select('B4');
-    return nir.subtract(red).divide(nir.add(red)).rename('ndvi');
+    return image.expression(
+      '(2 * NIR + 1 - sqrt(pow(2 * NIR + 1, 2) - 8 * (NIR - RED))) / 2',
+      { NIR: nir, RED: red }
+    ).rename('ndvi');
   },
   nitrogen: (image: any) => {
     const nir = image.select('B8');
@@ -286,7 +327,7 @@ const INDEX_PALETTES: Record<string, string[]> = {
 
 // Value ranges for visualization
 const INDEX_RANGES: Record<string, { min: number; max: number }> = {
-  ndvi: { min: 0, max: 1 },
+  ndvi: { min: 0, max: 0.7 },  // MSAVI2 range
   nitrogen: { min: 0, max: 300 },
   moisture: { min: 0, max: 50 },
   phosphorus: { min: 0, max: 100 },
@@ -398,7 +439,7 @@ async function processIndex(
             .combine(ee.Reducer.max(), '', true)
             .combine(ee.Reducer.stdDev(), '', true),
           geometry: eeGeometry,
-          scale: 30,
+          scale: 10,
           maxPixels: 1e9,
         })
       );
@@ -414,7 +455,7 @@ async function processIndex(
           firstIndex.reduceRegion({
             reducer: ee.Reducer.mean(),
             geometry: eeGeometry,
-            scale: 30,
+            scale: 10,
             maxPixels: 1e9,
           })
         );
@@ -434,7 +475,7 @@ async function processIndex(
           lastIndex.reduceRegion({
             reducer: ee.Reducer.mean(),
             geometry: eeGeometry,
-            scale: 30,
+            scale: 10,
             maxPixels: 1e9,
           })
         );
@@ -469,8 +510,9 @@ async function processIndex(
   const max = stats[`${index}_max`] || stats['max'] || 0;
   const stdDev = stats[`${index}_stdDev`] || stats['stdDev'] || 0;
 
-  const threshold = THRESHOLDS[index];
-  const belowThreshold = mean < threshold.warning;
+  const threshold = getSeasonalThresholds()[index];
+  // Only flag critical threshold violations (below 'low', not 'warning')
+  const belowThreshold = mean < threshold.low;
 
   let trend = 0;
   let trendDetected = false;
@@ -528,7 +570,7 @@ Deno.serve(async (req) => {
     const url = new URL(req.url);
     const polygonParam = url.searchParams.get('polygon');
     const indicesParam = url.searchParams.get('indices') || DIAGNOSTIC_INDICES.join(',');
-    const numImages = parseInt(url.searchParams.get('images') || '10');
+    const numDays = parseInt(url.searchParams.get('days') || '14');
 
     if (!polygonParam) {
       return errorResponse('polygon parameter is required', 400);
@@ -580,16 +622,17 @@ Deno.serve(async (req) => {
     const eeGeometry = geoJsonToEarthEngine(geometry);
 
     const indices = indicesParam.split(',').filter(i => DIAGNOSTIC_INDICES.includes(i));
-    console.log(`[Diagnostics] Processing indices: ${indices.join(', ')}`);
+    const season = getCurrentSeason();
+    console.log(`[Diagnostics] Season: ${season}, Processing indices: ${indices.join(', ')}`);
 
     const endDate = new Date().toISOString().split('T')[0];
-    const startDate = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-    console.log(`[Diagnostics] Date range: ${startDate} to ${endDate}`);
+    const startDate = new Date(Date.now() - numDays * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    console.log(`[Diagnostics] Date range: ${startDate} to ${endDate} (${numDays} days)`);
 
     const collectionStart = Date.now();
     const collection = getMergedOpticalCollection(eeGeometry, startDate, endDate);
 
-    const sortedCollection = collection.sort('system:time_start', false).limit(numImages);
+    const sortedCollection = collection.sort('system:time_start', false);
     console.log(`[Diagnostics] Collection setup: ${Date.now() - collectionStart}ms`);
 
     const precomputeStart = Date.now();
@@ -622,6 +665,50 @@ Deno.serve(async (req) => {
       }
     }
 
+    // --- Pixel sampling for data-driven spot placement ---
+    let cellData: Array<{ lat: number; lng: number; nitrogen: number | null; moisture: number | null; ndvi: number | null; phosphorus: number | null }> = [];
+    try {
+      const samplingStart = Date.now();
+      console.log('[Diagnostics] Starting pixel sampling...');
+
+      // Build a stacked multi-band image with all indices
+      const indexBands = indices.map(index => INDEX_CALCULATORS[index](precomputed.composite));
+      let stackedImage = indexBands[0];
+      for (let i = 1; i < indexBands.length; i++) {
+        stackedImage = stackedImage.addBands(indexBands[i]);
+      }
+
+      // Sample at 30m resolution (~1000 points for 85ha)
+      const samples = stackedImage.sample({
+        region: eeGeometry,
+        scale: 30,
+        geometries: true,
+        seed: 42,
+      });
+
+      const samplesResult = await evaluate(samples);
+      const features = samplesResult?.features || [];
+      console.log(`[Diagnostics] Sampled ${features.length} points in ${Date.now() - samplingStart}ms`);
+
+      cellData = features.map((f: any) => {
+        const coords = f.geometry?.coordinates || [0, 0];
+        const props = f.properties || {};
+        return {
+          lng: coords[0],
+          lat: coords[1],
+          nitrogen: props.nitrogen ?? null,
+          moisture: props.moisture ?? null,
+          ndvi: props.ndvi ?? null,
+          phosphorus: props.phosphorus ?? null,
+        };
+      });
+
+      timings['pixelSampling'] = Date.now() - samplingStart;
+    } catch (samplingError: any) {
+      console.warn('[Diagnostics] Pixel sampling failed (falling back to random placement):', samplingError?.message || samplingError);
+      cellData = [];
+    }
+
     const totalTime = Date.now() - requestStart;
     console.log('[Diagnostics] === TIMING SUMMARY ===');
     console.log(`[Diagnostics] Total request time: ${totalTime}ms`);
@@ -629,16 +716,21 @@ Deno.serve(async (req) => {
     for (const index of indices) {
       console.log(`[Diagnostics]   ${index}: ${timings[`${index}_total`] || 'N/A'}ms (stats: ${timings[`${index}_stats`] || 'N/A'}ms, first: ${timings[`${index}_firstImage`] || 'N/A'}ms, last: ${timings[`${index}_lastImage`] || 'N/A'}ms, map: ${timings[`${index}_mapTile`] || 'N/A'}ms)`);
     }
+    if (timings['pixelSampling']) {
+      console.log(`[Diagnostics]   pixelSampling: ${timings['pixelSampling']}ms (${cellData.length} points)`);
+    }
     console.log('[Diagnostics] ======================');
 
     return successResponse({
       analysis: analysisResults,
       problems,
+      cellData,
       metadata: {
-        imagesAnalyzed: numImages,
+        daysAnalyzed: numDays,
         dateRange: { start: startDate, end: endDate },
-        resolution: '30m',
+        resolution: '10m',
         indices: indices,
+        season,
         processingTimeMs: totalTime,
       },
     });

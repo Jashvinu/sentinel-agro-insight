@@ -3,15 +3,17 @@
  * Renders a Leaflet map with colored grid cells showing problem areas
  */
 
-import React, { useEffect, useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { MapContainer, TileLayer, Rectangle, GeoJSON, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import {
   GridCell,
   getCellColor,
   getCellOpacity,
+  isUrgentCell,
 } from '@/services/diagnosticService';
 import 'leaflet/dist/leaflet.css';
+import { Map, Satellite } from 'lucide-react';
 
 interface DiagnosticMapProps {
   cells: GridCell[];
@@ -47,6 +49,7 @@ export const DiagnosticMap: React.FC<DiagnosticMapProps> = ({
   onCellClick,
   selectedCellId,
 }) => {
+  const [baseMapType, setBaseMapType] = useState<'satellite' | 'street'>('satellite');
   // Calculate initial center from geometry
   const center = useMemo(() => {
     if (!farmGeometry) return [0, 0] as [number, number];
@@ -83,55 +86,94 @@ export const DiagnosticMap: React.FC<DiagnosticMapProps> = ({
   };
 
   return (
-    <MapContainer
-      center={center}
-      zoom={15}
-      style={{ height: '100%', width: '100%' }}
-      className="rounded-lg"
-    >
-      {/* Base layer - Satellite */}
-      <TileLayer
-        url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
-        attribution="&copy; Esri"
-      />
+    <div className="relative h-full w-full">
+      {/* Base Map Toggle Button */}
+      <div className="absolute top-3 right-3 z-[1000]">
+        <button
+          onClick={() => setBaseMapType(prev => prev === 'satellite' ? 'street' : 'satellite')}
+          className="flex items-center gap-2 px-3 py-2 bg-white/90 backdrop-blur-sm rounded-lg shadow-md border border-gray-200 hover:bg-white transition-colors text-sm font-medium text-gray-700"
+        >
+          {baseMapType === 'satellite' ? (
+            <>
+              <Map className="w-4 h-4" />
+              Street Map
+            </>
+          ) : (
+            <>
+              <Satellite className="w-4 h-4" />
+              Satellite
+            </>
+          )}
+        </button>
+      </div>
 
-      {/* Farm boundary outline */}
-      {farmGeometry && (
-        <GeoJSON
-          key={JSON.stringify(farmGeometry)}
-          data={{ type: 'Feature', geometry: farmGeometry, properties: {} }}
-          style={farmStyle}
-        />
-      )}
-
-      {/* Grid cells with problems */}
-      {cells.map((cell) => {
-        const color = getCellColor(cell);
-        const opacity = getCellOpacity(cell);
-        const isSelected = cell.id === selectedCellId;
-
-        if (!color || opacity === 0) return null;
-
-        return (
-          <Rectangle
-            key={cell.id}
-            bounds={cell.bounds as [[number, number], [number, number]]}
-            pathOptions={{
-              color: isSelected ? '#ffffff' : color,
-              weight: isSelected ? 3 : 1,
-              fillColor: color,
-              fillOpacity: opacity,
-            }}
-            eventHandlers={{
-              click: () => onCellClick?.(cell),
-            }}
+      <MapContainer
+        center={center}
+        zoom={15}
+        style={{ height: '100%', width: '100%' }}
+        className="rounded-lg"
+        preferCanvas={true}
+      >
+        {/* Base layer - Conditional based on toggle */}
+        {baseMapType === 'satellite' ? (
+          <TileLayer
+            url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
+            attribution="&copy; Esri"
           />
-        );
-      })}
+        ) : (
+          <TileLayer
+            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+            attribution="&copy; OpenStreetMap contributors"
+          />
+        )}
 
-      {/* Fit bounds to farm */}
-      <FitBounds geometry={farmGeometry} />
-    </MapContainer>
+        {/* Farm boundary outline */}
+        {farmGeometry && (
+          <GeoJSON
+            key={JSON.stringify(farmGeometry)}
+            data={{ type: 'Feature', geometry: farmGeometry, properties: {} }}
+            style={farmStyle}
+          />
+        )}
+
+        {/* Grid cells with problems - render non-urgent first, urgent on top */}
+        {cells
+          .filter(cell => getCellColor(cell) && getCellOpacity(cell) > 0)
+          .sort((a, b) => {
+            const aUrgent = isUrgentCell(a) ? 1 : 0;
+            const bUrgent = isUrgentCell(b) ? 1 : 0;
+            if (aUrgent !== bUrgent) return aUrgent - bUrgent;
+            return a.problems.length - b.problems.length;
+          })
+          .map((cell) => {
+          const color = getCellColor(cell);
+          const opacity = getCellOpacity(cell);
+          const isSelected = cell.id === selectedCellId;
+          const isOverlap = cell.problems.length > 1;
+          const urgent = isUrgentCell(cell);
+
+          return (
+            <Rectangle
+              key={cell.id}
+              bounds={cell.bounds as [[number, number], [number, number]]}
+              pathOptions={{
+                color: isSelected ? '#ffffff' : urgent ? '#ef4444' : isOverlap ? '#ffffff' : color!,
+                weight: isSelected ? 3 : urgent ? 3 : isOverlap ? 2 : 1,
+                fillColor: color!,
+                fillOpacity: opacity,
+                dashArray: undefined,
+              }}
+              eventHandlers={{
+                click: () => onCellClick?.(cell),
+              }}
+            />
+          );
+        })}
+
+        {/* Fit bounds to farm */}
+        <FitBounds geometry={farmGeometry} />
+      </MapContainer>
+    </div>
   );
 };
 

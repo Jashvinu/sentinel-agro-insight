@@ -5,8 +5,7 @@
 
 import React from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Progress } from '@/components/ui/progress';
-import { DiagnosticResult } from '@/services/diagnosticService';
+import { DiagnosticResult, isUrgentCell } from '@/services/diagnosticService';
 import {
   Activity,
   CheckCircle2,
@@ -48,10 +47,11 @@ export const ProblemSummary: React.FC<ProblemSummaryProps> = ({
     );
   }
 
-  const { farmStats, problems, imagesAnalyzed, analysisDate } = result;
+  const { farmStats, problems, imagesAnalyzed, analysisDate, cells } = result;
   const healthPercent = Math.round(
     (farmStats.healthyCells / farmStats.totalCells) * 100
   );
+  const hasUrgentCells = cells.some(c => isUrgentCell(c));
 
   return (
     <Card>
@@ -62,32 +62,48 @@ export const ProblemSummary: React.FC<ProblemSummaryProps> = ({
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
-        {/* Health score */}
-        <div>
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-sm text-muted-foreground">Overall Health</span>
-            <span
-              className={`text-sm font-medium ${
+        {/* Circular health score */}
+        <div className="flex flex-col items-center gap-2">
+          <div className="relative w-24 h-24">
+            <svg className="w-24 h-24 -rotate-90" viewBox="0 0 100 100">
+              <circle
+                cx="50" cy="50" r="42"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="8"
+                className="text-muted/30"
+              />
+              <circle
+                cx="50" cy="50" r="42"
+                fill="none"
+                strokeWidth="8"
+                strokeLinecap="round"
+                strokeDasharray={`${healthPercent * 2.64} 264`}
+                className={
+                  healthPercent >= 70
+                    ? 'text-green-500'
+                    : healthPercent >= 50
+                    ? 'text-amber-500'
+                    : 'text-red-500'
+                }
+                stroke="currentColor"
+              />
+            </svg>
+            <div className="absolute inset-0 flex flex-col items-center justify-center">
+              <span className={`text-xl font-bold ${
                 healthPercent >= 70
                   ? 'text-green-600'
                   : healthPercent >= 50
                   ? 'text-amber-600'
                   : 'text-red-600'
-              }`}
-            >
-              {healthPercent}%
-            </span>
+              }`}>
+                {healthPercent}%
+              </span>
+            </div>
           </div>
-          <Progress
-            value={healthPercent}
-            className={`h-2 ${
-              healthPercent >= 70
-                ? '[&>div]:bg-green-500'
-                : healthPercent >= 50
-                ? '[&>div]:bg-amber-500'
-                : '[&>div]:bg-red-500'
-            }`}
-          />
+          <span className="text-xs text-muted-foreground">
+            {farmStats.healthyCells} of {farmStats.totalCells} cells healthy
+          </span>
         </div>
 
         {/* Statistics */}
@@ -101,16 +117,21 @@ export const ProblemSummary: React.FC<ProblemSummaryProps> = ({
             icon={<CheckCircle2 className="w-4 h-4 text-green-500" />}
             label="Healthy"
             value={farmStats.healthyCells}
+            bgClass="bg-green-50 border-green-200"
           />
           <StatCard
             icon={<AlertTriangle className="w-4 h-4 text-amber-500" />}
             label="Problem Areas"
             value={farmStats.problemCells}
+            bgClass={hasUrgentCells ? "bg-red-50 border-red-500 border-2" : farmStats.problemCells > 0 ? "bg-amber-50 border-amber-200" : undefined}
+            urgent={hasUrgentCells}
           />
           <StatCard
             icon={<Layers className="w-4 h-4 text-purple-500" />}
-            label="Overlap Areas"
+            label="Critical Areas"
             value={farmStats.overlapCells}
+            bgClass={farmStats.overlapCells > 0 && hasUrgentCells ? "bg-red-50 border-red-500 border-2" : farmStats.overlapCells > 0 ? "bg-purple-50 border-purple-300" : undefined}
+            urgent={farmStats.overlapCells > 0 && hasUrgentCells}
           />
         </div>
 
@@ -164,13 +185,20 @@ interface StatCardProps {
   icon: React.ReactNode;
   label: string;
   value: number;
+  bgClass?: string;
+  urgent?: boolean;
 }
 
-const StatCard: React.FC<StatCardProps> = ({ icon, label, value }) => (
-  <div className="p-2 rounded-lg border bg-muted/30">
+const StatCard: React.FC<StatCardProps> = ({ icon, label, value, bgClass, urgent }) => (
+  <div className={`p-2 rounded-lg border ${bgClass || 'bg-muted/30'} relative`}>
     <div className="flex items-center gap-1 text-muted-foreground mb-1">
       {icon}
       <span className="text-xs">{label}</span>
+      {urgent && (
+        <span className="ml-auto text-[10px] font-semibold text-red-600 bg-red-100 px-1.5 py-0.5 rounded-full">
+          Urgent
+        </span>
+      )}
     </div>
     <div className="text-lg font-semibold">{value}</div>
   </div>

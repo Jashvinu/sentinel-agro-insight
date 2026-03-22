@@ -17,14 +17,14 @@ const DIAGNOSTIC_INDICES = ['nitrogen', 'moisture', 'ndvi', 'phosphorus'];
 
 // Thresholds for problem detection
 const THRESHOLDS: Record<string, { low: number; warning: number }> = {
-  nitrogen: { low: 100, warning: 150 },     // kg N/ha
-  moisture: { low: 15, warning: 25 },       // % volumetric
-  ndvi: { low: 0.3, warning: 0.5 },         // index (0-1)
-  phosphorus: { low: 30, warning: 50 },     // kg P₂O₅/ha
+  nitrogen: { low: 60, warning: 90 },       // kg N/ha
+  moisture: { low: 8, warning: 14 },        // % volumetric
+  ndvi: { low: 0.15, warning: 0.25 },       // index (0-1)
+  phosphorus: { low: 15, warning: 28 },     // kg P₂O₅/ha
 };
 
 // Trend detection threshold
-const TREND_THRESHOLD_PERCENT = -15; // 15% decline triggers alert
+const TREND_THRESHOLD_PERCENT = -30; // 30% decline triggers alert
 
 // Index calculation functions
 const INDEX_CALCULATORS: Record<string, (image: any) => any> = {
@@ -133,7 +133,7 @@ async function processIndex(
             .combine(ee.Reducer.max(), '', true)
             .combine(ee.Reducer.stdDev(), '', true),
           geometry: eeGeometry,
-          scale: 30,
+          scale: 10,
           maxPixels: 1e9,
         })
       );
@@ -150,7 +150,7 @@ async function processIndex(
           firstIndex.reduceRegion({
             reducer: ee.Reducer.mean(),
             geometry: eeGeometry,
-            scale: 30,
+            scale: 10,
             maxPixels: 1e9,
           })
         );
@@ -171,7 +171,7 @@ async function processIndex(
           lastIndex.reduceRegion({
             reducer: ee.Reducer.mean(),
             geometry: eeGeometry,
-            scale: 30,
+            scale: 10,
             maxPixels: 1e9,
           })
         );
@@ -266,7 +266,7 @@ router.get('/', async (req: Request, res: Response) => {
   try {
     const polygonParam = req.query.polygon as string;
     const indicesParam = (req.query.indices as string) || DIAGNOSTIC_INDICES.join(',');
-    const numImages = parseInt(req.query.images as string) || 10;
+    const numDays = parseInt(req.query.days as string) || 14;
 
     if (!polygonParam) {
       return errorResponse(res, 'polygon parameter is required', 400);
@@ -287,17 +287,17 @@ router.get('/', async (req: Request, res: Response) => {
     const indices = indicesParam.split(',').filter(i => DIAGNOSTIC_INDICES.includes(i));
     console.log(`[Diagnostics] Processing indices: ${indices.join(', ')}`);
 
-    // Calculate date range (last 90 days)
+    // Calculate date range (last N days)
     const endDate = new Date().toISOString().split('T')[0];
-    const startDate = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-    console.log(`[Diagnostics] Date range: ${startDate} to ${endDate}`);
+    const startDate = new Date(Date.now() - numDays * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    console.log(`[Diagnostics] Date range: ${startDate} to ${endDate} (${numDays} days)`);
 
     // Fetch satellite imagery
     const collectionStart = Date.now();
     const collection = getMergedOpticalCollection(eeGeometry, startDate, endDate);
 
-    // Sort by date and limit to last N images
-    const sortedCollection = collection.sort('system:time_start', false).limit(numImages);
+    // Sort by date (use all images within date range)
+    const sortedCollection = collection.sort('system:time_start', false);
     console.log(`[Diagnostics] Collection setup: ${Date.now() - collectionStart}ms`);
 
     // Pre-compute shared images ONCE (instead of per-index)
@@ -348,9 +348,9 @@ router.get('/', async (req: Request, res: Response) => {
       analysis: analysisResults,
       problems,
       metadata: {
-        imagesAnalyzed: numImages,
+        daysAnalyzed: numDays,
         dateRange: { start: startDate, end: endDate },
-        resolution: '30m',
+        resolution: '10m',
         indices: indices,
         processingTimeMs: totalTime,
       },

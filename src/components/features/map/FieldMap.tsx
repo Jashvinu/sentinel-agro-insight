@@ -174,6 +174,7 @@ export const FieldMap: React.FC<FieldMapProps> = ({
   const [editingPolygonId, setEditingPolygonId] = useState<string | null>(null);
   const [showTimeSeriesPanel, setShowTimeSeriesPanel] = useState(false);
   const [editPolygonName, setEditPolygonName] = useState('');
+  const [baseMapType, setBaseMapType] = useState<'satellite' | 'street'>('satellite');
   const { toast } = useToast();
 
   // Helper function to handle index selection (cache disabled)
@@ -195,8 +196,9 @@ export const FieldMap: React.FC<FieldMapProps> = ({
     setLoadingWithMinDuration(true);
   }, [allowedIndices, toast]);
 
-  // Leaflet base tile
-  const baseTileUrl = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
+  // Leaflet base tile URLs
+  const streetTileUrl = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
+  const satelliteTileUrl = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
 
   const availableLayers = useMemo(() => {
     if (!earthEngineData) return [];
@@ -358,41 +360,42 @@ export const FieldMap: React.FC<FieldMapProps> = ({
         }
       }
 
-      // Add default "Jash farm" if no farms exist
-      if (polygons.length === 0) {
-        const defaultJashFarmGeoJSON = {
-          type: 'Feature' as const,
-          geometry: {
-            type: 'Polygon' as const,
-            coordinates: [[
-              [-77.84787380620527, 40.760804082400966],
-              [-77.8460000532441, 40.758886478177885],
-              [-77.8438098442277, 40.76055807705745],
-              [-77.84583349742549, 40.76257024787489],
-              [-77.84787380620527, 40.760804082400966]
-            ]]
-          },
-          properties: {}
-        };
+      // Default Evergreen Farms geometry
+      const defaultFarmId = 'd556697f-f6a0-457e-b5f8-61657c65c104';
+      const defaultFarmGeoJSON = {
+        type: 'Feature' as const,
+        geometry: {
+          type: 'MultiPolygon' as const,
+          coordinates: [
+            [[[-78.09880022071837,40.65864666584693],[-78.09917082015923,40.657905478380286],[-78.10028261848186,40.65693425475189],[-78.10011416419079,40.65578410322158],[-78.10125965337149,40.65417385776789],[-78.09940665616713,40.652512452677996],[-78.09944034702522,40.650697639844],[-78.0995414196001,40.65016085475858],[-78.09482469944236,40.64757911378487],[-78.09250003022157,40.64995636406658],[-78.09243264850475,40.65074876200808],[-78.09054596044164,40.652154606166874],[-78.08876034495346,40.65102993320929],[-78.08724425633122,40.652154606166874],[-78.09880022071837,40.65864666584693]]],
+            [[[-78.06158287165816,40.6713457913508],[-78.05965737181967,40.670419667896795],[-78.05322338455537,40.67262809489833],[-78.05477317710816,40.674693976521866],[-78.06158287165816,40.6713457913508]]]
+          ]
+        },
+        properties: {}
+      };
+      const defaultPolygon: SavedPolygon = {
+        id: defaultFarmId,
+        name: 'Evergreen Farms',
+        geojson: defaultFarmGeoJSON,
+        createdAt: new Date().toISOString(),
+      };
 
-        const defaultPolygon: SavedPolygon = {
-          id: 'df43eedf-850d-454c-9fbf-36a052be10c0',
-          name: 'Jash farm',
-          geojson: defaultJashFarmGeoJSON,
-          createdAt: new Date().toISOString(),
-        };
-
-        polygons = [defaultPolygon];
-        localStorage.setItem('savedPolygons', JSON.stringify(polygons));
+      // Always ensure Evergreen Farms exists with correct geometry
+      const existingIdx = polygons.findIndex(p => p.id === defaultFarmId || p.name === 'Evergreen Farms');
+      if (existingIdx >= 0) {
+        polygons[existingIdx] = defaultPolygon;
+      } else {
+        polygons.unshift(defaultPolygon);
       }
+      localStorage.setItem('savedPolygons', JSON.stringify(polygons));
 
       setSavedPolygons(polygons);
 
-      // Set "Jash farm" as default selected farm, or first available
-      const jashFarm = polygons.find(p => p.name === 'Jash farm');
-      if (jashFarm) {
-        setSelectedFarmId(jashFarm.id);
-        setCurrentPolygonId(jashFarm.id);
+      // Set Evergreen Farms as default selected farm, or first available
+      const evergreenFarm = polygons.find(p => p.id === defaultFarmId || p.name === 'Evergreen Farms');
+      if (evergreenFarm) {
+        setSelectedFarmId(evergreenFarm.id);
+        setCurrentPolygonId(evergreenFarm.id);
       } else if (polygons.length > 0) {
         setSelectedFarmId(polygons[0].id);
         setCurrentPolygonId(polygons[0].id);
@@ -1331,7 +1334,12 @@ export const FieldMap: React.FC<FieldMapProps> = ({
             style={{ height: '100%', width: '100%' }}
             preferCanvas
           >
-            <TileLayer url={baseTileUrl} attribution="&copy; OpenStreetMap contributors" />
+            {/* Base layer - Conditional based on toggle */}
+            {baseMapType === 'satellite' ? (
+              <TileLayer url={satelliteTileUrl} attribution="&copy; Esri" />
+            ) : (
+              <TileLayer url={streetTileUrl} attribution="&copy; OpenStreetMap contributors" />
+            )}
             {earthEngineTileUrl && (
               <TileLayer url={earthEngineTileUrl} opacity={1} zIndex={500} />
             )}
@@ -1363,6 +1371,27 @@ export const FieldMap: React.FC<FieldMapProps> = ({
             )}
             <MapEffects />
           </MapContainer>
+
+          {/* Base Map Toggle Button */}
+          <div className="absolute top-4 right-4 z-[1000]">
+            <button
+              onClick={() => setBaseMapType(prev => prev === 'satellite' ? 'street' : 'satellite')}
+              className="flex items-center gap-2 px-3 py-2 bg-white/90 backdrop-blur-sm rounded-lg shadow-md border border-gray-200 hover:bg-white transition-colors text-sm font-medium text-gray-700"
+            >
+              {baseMapType === 'satellite' ? (
+                <>
+                  <MapPin className="w-4 h-4" />
+                  Street Map
+                </>
+              ) : (
+                <>
+                  <Satellite className="w-4 h-4" />
+                  Satellite
+                </>
+              )}
+            </button>
+          </div>
+
           {/* Loading Overlay */}
           {loading && (
             <div className="absolute inset-0 bg-black/40 backdrop-blur-sm z-[1000] flex items-center justify-center">

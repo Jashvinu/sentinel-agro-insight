@@ -26,13 +26,19 @@ import {
   Activity,
   Loader2,
   MapPin,
+  ChevronDown,
 } from 'lucide-react';
+import { useWeather } from '@/hooks/useWeather';
+import { DiagnosticsWeatherCard } from '@/components/features/diagnostics/DiagnosticsWeatherCard';
 
 const FieldDiagnostics: React.FC = () => {
   const [currentPage, setCurrentPage] = useState('diagnostics');
   const navigate = useNavigate();
   const { toast } = useToast();
-  const { farm, farmId, loading: farmLoading } = useAbeFarm();
+  const { farm, farmId, farms, loading: farmLoading, selectFarm } = useAbeFarm();
+
+  // Weather
+  const { data: weatherData, loading: weatherLoading, fetchWeather } = useWeather();
 
   // Analysis state
   const [result, setResult] = useState<DiagnosticResult | null>(null);
@@ -96,6 +102,33 @@ const FieldDiagnostics: React.FC = () => {
     }
   }, [farm?.geometry, result, isAnalyzing, runAnalysis]);
 
+  // Re-run analysis when farm changes
+  useEffect(() => {
+    if (farmId && farm?.geometry) {
+      setResult(null); // Clear previous results to trigger new analysis
+    }
+  }, [farmId]);
+
+  // Fetch weather when farm loads
+  useEffect(() => {
+    if (!farm?.geometry) return;
+    try {
+      let coords: number[][];
+      if (farm.geometry.type === 'Polygon') {
+        coords = farm.geometry.coordinates[0];
+      } else if (farm.geometry.type === 'MultiPolygon') {
+        coords = farm.geometry.coordinates[0][0];
+      } else return;
+      const lats = coords.map((c: number[]) => c[1]);
+      const lngs = coords.map((c: number[]) => c[0]);
+      const lat = (Math.min(...lats) + Math.max(...lats)) / 2;
+      const lng = (Math.min(...lngs) + Math.max(...lngs)) / 2;
+      fetchWeather(lat, lng);
+    } catch {
+      // silently skip weather
+    }
+  }, [farm?.geometry, fetchWeather]);
+
   // Handle cell click
   const handleCellClick = (cell: GridCell) => {
     setSelectedCell(cell);
@@ -135,7 +168,7 @@ const FieldDiagnostics: React.FC = () => {
 
       <main className="px-4 sm:px-6 lg:px-8 py-4 sm:py-6 space-y-4">
         {/* Header */}
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 p-4 bg-muted/30 rounded-lg border">
           <div className="flex items-center gap-3">
             <Button
               variant="outline"
@@ -157,6 +190,31 @@ const FieldDiagnostics: React.FC = () => {
               )}
             </div>
           </div>
+
+          {/* Farm Selector Dropdown */}
+          {farms.length > 1 && (
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-muted-foreground">Farm:</span>
+              <div className="relative">
+                <select
+                  value={farmId || ''}
+                  onChange={(e) => {
+                    if (e.target.value) {
+                      selectFarm(e.target.value);
+                    }
+                  }}
+                  className="appearance-none bg-background border border-input rounded-md px-3 py-1.5 pr-8 text-sm focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 min-w-[150px]"
+                >
+                  {farms.map((f) => (
+                    <option key={f.id} value={f.id}>
+                      {f.name}
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 pointer-events-none text-muted-foreground" />
+              </div>
+            </div>
+          )}
 
           <div className="flex items-center gap-2">
             {result && (
@@ -189,6 +247,13 @@ const FieldDiagnostics: React.FC = () => {
                   <p className="text-sm text-muted-foreground">
                     {progress.toFixed(0)}% complete
                   </p>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    {progress < 20 ? 'Connecting to Earth Engine...' :
+                      progress < 50 ? 'Downloading last 2 weeks of imagery...' :
+                        progress < 70 ? 'Building 10m grid cells...' :
+                          progress < 90 ? 'Detecting problem areas...' :
+                            'Finalizing results...'}
+                  </p>
                 </div>
                 <div className="w-full max-w-xs bg-muted rounded-full h-2">
                   <div
@@ -211,11 +276,11 @@ const FieldDiagnostics: React.FC = () => {
                   <CardTitle className="text-sm font-semibold flex items-center justify-between">
                     <span>Diagnostic Map</span>
                     <Badge variant="outline" className="font-normal">
-                      30m resolution
+                      10m resolution
                     </Badge>
                   </CardTitle>
                 </CardHeader>
-                <CardContent className="p-0 relative" style={{ height: '500px' }}>
+                <CardContent className="p-0 relative" style={{ height: '600px' }}>
                   <DiagnosticMap
                     cells={result.cells}
                     farmGeometry={farm?.geometry}
@@ -233,9 +298,11 @@ const FieldDiagnostics: React.FC = () => {
             {/* Sidebar - takes 1 column on large screens */}
             <div className="space-y-4">
               <ProblemSummary result={result} />
+              <DiagnosticsWeatherCard data={weatherData} loading={weatherLoading} />
               <DiagnosticLegend
                 problems={result.problems}
                 hasOverlaps={result.farmStats.overlapCells > 0}
+                totalCells={result.farmStats.totalCells}
               />
             </div>
           </div>

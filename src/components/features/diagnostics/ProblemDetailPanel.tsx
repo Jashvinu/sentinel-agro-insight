@@ -14,6 +14,7 @@ import {
   getIndexColor,
   getIndexLabel,
   getIndexThresholds,
+  isUrgentCell,
 } from '@/services/diagnosticService';
 import {
   X,
@@ -38,7 +39,10 @@ export const ProblemDetailPanel: React.FC<ProblemDetailPanelProps> = ({
   const [lat, lng] = cell.center;
 
   return (
-    <Card className="absolute bottom-4 left-4 w-80 z-[1000] shadow-lg">
+    <Card className="absolute bottom-4 left-4 w-96 z-[1000] shadow-lg" style={{
+      borderTopWidth: '3px',
+      borderTopColor: cell.severity === 'high' ? '#ef4444' : cell.severity === 'medium' ? '#f59e0b' : '#6b7280',
+    }}>
       <CardHeader className="pb-2">
         <div className="flex items-center justify-between">
           <CardTitle className="text-sm font-semibold flex items-center gap-2">
@@ -69,6 +73,11 @@ export const ProblemDetailPanel: React.FC<ProblemDetailPanelProps> = ({
           >
             {cell.severity.charAt(0).toUpperCase() + cell.severity.slice(1)}
           </Badge>
+          {isUrgentCell(cell) && (
+            <Badge className="bg-red-600 text-white text-xs animate-pulse">
+              Urgent
+            </Badge>
+          )}
           {cell.problems.length > 1 && (
             <Badge variant="outline" className="text-xs">
               {cell.problems.length} issues
@@ -128,7 +137,7 @@ const ProblemItem: React.FC<ProblemItemProps> = ({ problem }) => {
   };
 
   return (
-    <div className="p-2 rounded-lg border bg-muted/30">
+    <div className={`p-2 rounded-lg border ${problem.urgent ? 'border-red-500 border-2 bg-red-50/50' : 'bg-muted/30'}`}>
       <div className="flex items-center gap-2 mb-1">
         <div
           className="w-3 h-3 rounded"
@@ -136,6 +145,11 @@ const ProblemItem: React.FC<ProblemItemProps> = ({ problem }) => {
         />
         <span className="text-sm font-medium">{label}</span>
         <span className="text-muted-foreground">{getIcon()}</span>
+        {problem.urgent && (
+          <span className="ml-auto text-[10px] font-semibold text-red-600 bg-red-100 px-1.5 py-0.5 rounded-full">
+            Urgent
+          </span>
+        )}
       </div>
 
       <div className="grid grid-cols-2 gap-2 text-xs">
