@@ -5,6 +5,7 @@
  */
 
 import ee from 'npm:@google/earthengine@1.6.13';
+import { createClient } from 'npm:@supabase/supabase-js@2';
 
 // ============================================================================
 // INLINED SHARED UTILITIES (from _shared/cors.ts, _shared/response.ts, _shared/satellite-utils.ts)
@@ -355,6 +356,135 @@ function authenticate(serviceAccount: any): Promise<void> {
   });
 }
 
+// ============================================================================
+// SUPABASE CLIENT (for cache + storage)
+// ============================================================================
+
+const supabaseAdmin = createClient(
+  Deno.env.get('SUPABASE_URL') ?? '',
+  Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
+);
+
+function computeBounds(geometry: { type: string; coordinates: any }): [[number, number], [number, number]] {
+  let allCoords: number[][] = [];
+  if (geometry.type === 'Polygon') {
+    allCoords = (geometry.coordinates as number[][][]).flat();
+  } else if (geometry.type === 'MultiPolygon') {
+    allCoords = (geometry.coordinates as number[][][][]).flat(2);
+  }
+  if (allCoords.length === 0) return [[0, 0], [0, 0]];
+  const lats = allCoords.map((c) => c[1]);
+  const lngs = allCoords.map((c) => c[0]);
+  return [
+    [Math.min(...lats), Math.min(...lngs)],
+    [Math.max(...lats), Math.max(...lngs)],
+  ];
+}
+
+async function checkDiagnosticsCache(farmId: string): Promise<any | null> {
+  const { data, error } = await supabaseAdmin
+    .from('diagnostics_cache')
+    .select('*')
+    .eq('farm_id', farmId)
+    .gt('expires_at', new Date().toISOString())
+    .single();
+  if (error || !data) return null;
+  return data;
+}
+
+function getThumbUrl(image: any, params: any): Promise<string> {
+  return new Promise((resolve, reject) =>
+    image.getThumbURL(params, (url: string, error: any) =>
+      error ? reject(new Error(error)) : resolve(url)
+    )
+  );
+}
+
+async function generateAndUploadRaster(
+  index: string,
+  image: any,
+  farmId: string,
+  timestamp: number
+): Promise<string | null> {
+  try {
+    const thumbUrl = await getThumbUrl(image, {
+      min: INDEX_RANGES[index].min,
+      max: INDEX_RANGES[index].max,
+      palette: INDEX_PALETTES[index],
+      dimensions: 512,
+      format: 'png',
+    });
+
+    const imgResponse = await fetch(thumbUrl);
+    if (!imgResponse.ok) {
+      console.warn(`[Diagnostics] Thumb fetch failed for ${index}: ${imgResponse.status}`);
+      return null;
+    }
+    const bytes = await imgResponse.arrayBuffer();
+
+    const path = `diagnostics/${farmId}/${timestamp}/${index}.png`;
+    const { error: uploadError } = await supabaseAdmin.storage
+      .from('diagnostics')
+      .upload(path, bytes, { contentType: 'image/png', upsert: true });
+
+    if (uploadError) {
+      console.warn(`[Diagnostics] Upload failed for ${index}:`, uploadError);
+      return null;
+    }
+
+    const { data: { publicUrl } } = supabaseAdmin.storage
+      .from('diagnostics')
+      .getPublicUrl(path);
+
+    return publicUrl;
+  } catch (e) {
+    console.warn(`[Diagnostics] Raster generation failed for ${index}:`, e);
+    return null;
+  }
+}
+
+async function upsertDiagnosticsCache(farmId: string, payload: {
+  rasterUrls: Record<string, string>;
+  bounds: [[number, number], [number, number]];
+  cellData: any[];
+  analysis: any;
+  problems: any[];
+  metadata: any;
+  season: string;
+  indices: string[];
+  startDate: string;
+  endDate: string;
+}): Promise<void> {
+  const { error } = await supabaseAdmin
+    .from('diagnostics_cache')
+    .upsert({
+      farm_id: farmId,
+      generated_at: new Date().toISOString(),
+      expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+      date_range: { start: payload.startDate, end: payload.endDate },
+      season: payload.season,
+      indices: payload.indices,
+      raster_urls: payload.rasterUrls,
+      bounds: payload.bounds,
+      cell_stats: payload.cellData,
+      analysis_summary: {
+        analysis: payload.analysis,
+        problems: payload.problems,
+        metadata: payload.metadata,
+      },
+    }, { onConflict: 'farm_id' });
+
+  if (error) {
+    console.warn('[Diagnostics] Cache upsert failed:', error);
+  } else {
+    console.log('[Diagnostics] Cache upserted successfully');
+  }
+}
+
+// ============================================================================
+// EARTH ENGINE HELPERS
+// ============================================================================
+
 function getMapId(image: any, vis: any): Promise<any> {
   return new Promise((resolve, reject) => {
     image.getMapId(vis, (obj: any, error: any) => {
@@ -569,6 +699,7 @@ Deno.serve(async (req) => {
   try {
     const url = new URL(req.url);
     const polygonParam = url.searchParams.get('polygon');
+    const farmId = url.searchParams.get('farm_id') || null;
     const indicesParam = url.searchParams.get('indices') || DIAGNOSTIC_INDICES.join(',');
     const numDays = parseInt(url.searchParams.get('days') || '14');
 
@@ -581,6 +712,27 @@ Deno.serve(async (req) => {
       geometry = JSON.parse(polygonParam);
     } catch (e) {
       return errorResponse('Invalid polygon JSON', 400);
+    }
+
+    // Check cache first (skip GEE if valid cache exists)
+    if (farmId) {
+      const cached = await checkDiagnosticsCache(farmId);
+      if (cached) {
+        console.log('[Diagnostics] Cache hit for farm:', farmId);
+        const summary = cached.analysis_summary || {};
+        return successResponse({
+          cached: true,
+          analysis: summary.analysis || {},
+          problems: summary.problems || [],
+          cellData: cached.cell_stats || [],
+          cell_stats: cached.cell_stats || [],
+          raster_urls: cached.raster_urls || {},
+          bounds: cached.bounds || [[0, 0], [0, 0]],
+          expires_at: cached.expires_at,
+          metadata: summary.metadata || {},
+        });
+      }
+      console.log('[Diagnostics] Cache miss for farm:', farmId, '— running GEE analysis');
     }
 
     let serviceAccountKey: any;
@@ -709,6 +861,31 @@ Deno.serve(async (req) => {
       cellData = [];
     }
 
+    // --- Raster generation: render + upload PNGs to Supabase Storage ---
+    const rasterUrls: Record<string, string> = {};
+    const bounds = computeBounds(geometry);
+
+    if (farmId) {
+      const rasterStart = Date.now();
+      console.log('[Diagnostics] Generating raster images...');
+      const timestamp = Date.now();
+
+      const rasterResults = await Promise.all(
+        indices.map(async (index) => {
+          const clippedImage = INDEX_CALCULATORS[index](precomputed.composite).clip(eeGeometry);
+          const publicUrl = await generateAndUploadRaster(index, clippedImage, farmId, timestamp);
+          return { index, publicUrl };
+        })
+      );
+
+      rasterResults.forEach(({ index, publicUrl }) => {
+        if (publicUrl) rasterUrls[index] = publicUrl;
+      });
+
+      timings['rasterGeneration'] = Date.now() - rasterStart;
+      console.log(`[Diagnostics] Raster generation: ${timings['rasterGeneration']}ms (${Object.keys(rasterUrls).length}/${indices.length} uploaded)`);
+    }
+
     const totalTime = Date.now() - requestStart;
     console.log('[Diagnostics] === TIMING SUMMARY ===');
     console.log(`[Diagnostics] Total request time: ${totalTime}ms`);
@@ -719,20 +896,45 @@ Deno.serve(async (req) => {
     if (timings['pixelSampling']) {
       console.log(`[Diagnostics]   pixelSampling: ${timings['pixelSampling']}ms (${cellData.length} points)`);
     }
+    if (timings['rasterGeneration']) {
+      console.log(`[Diagnostics]   rasterGeneration: ${timings['rasterGeneration']}ms`);
+    }
     console.log('[Diagnostics] ======================');
 
+    const metadata = {
+      daysAnalyzed: numDays,
+      dateRange: { start: startDate, end: endDate },
+      resolution: '10m',
+      indices,
+      season,
+      processingTimeMs: totalTime,
+    };
+
+    // Persist to cache (non-blocking — don't await to avoid delaying response)
+    if (farmId) {
+      upsertDiagnosticsCache(farmId, {
+        rasterUrls,
+        bounds,
+        cellData,
+        analysis: analysisResults,
+        problems,
+        metadata,
+        season,
+        indices,
+        startDate,
+        endDate,
+      }).catch((e) => console.warn('[Diagnostics] Background cache upsert error:', e));
+    }
+
     return successResponse({
+      cached: false,
       analysis: analysisResults,
       problems,
       cellData,
-      metadata: {
-        daysAnalyzed: numDays,
-        dateRange: { start: startDate, end: endDate },
-        resolution: '10m',
-        indices: indices,
-        season,
-        processingTimeMs: totalTime,
-      },
+      cell_stats: cellData,
+      raster_urls: rasterUrls,
+      bounds,
+      metadata,
     });
   } catch (error: any) {
     const totalTime = Date.now() - requestStart;

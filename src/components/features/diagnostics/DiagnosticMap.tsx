@@ -4,7 +4,7 @@
  */
 
 import React, { useEffect, useMemo, useState } from 'react';
-import { MapContainer, TileLayer, Rectangle, GeoJSON, useMap } from 'react-leaflet';
+import { MapContainer, TileLayer, Rectangle, GeoJSON, ImageOverlay, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import {
   GridCell,
@@ -20,6 +20,10 @@ interface DiagnosticMapProps {
   farmGeometry: any;
   onCellClick?: (cell: GridCell) => void;
   selectedCellId?: string | null;
+  rasterUrls?: Record<string, string>;
+  rasterBounds?: [[number, number], [number, number]]; // [[south, west], [north, east]]
+  activeIndex?: string;
+  onActiveIndexChange?: (index: string) => void;
 }
 
 // Component to fit map bounds to farm
@@ -43,13 +47,26 @@ function FitBounds({ geometry }: { geometry: any }) {
   return null;
 }
 
+const RASTER_INDICES = ['ndvi', 'nitrogen', 'moisture', 'phosphorus'] as const;
+const RASTER_INDEX_LABELS: Record<string, string> = {
+  ndvi: 'Crop Health',
+  nitrogen: 'Nitrogen',
+  moisture: 'Moisture',
+  phosphorus: 'Phosphorus',
+};
+
 export const DiagnosticMap: React.FC<DiagnosticMapProps> = ({
   cells,
   farmGeometry,
   onCellClick,
   selectedCellId,
+  rasterUrls,
+  rasterBounds,
+  activeIndex,
+  onActiveIndexChange,
 }) => {
   const [baseMapType, setBaseMapType] = useState<'satellite' | 'street'>('satellite');
+  const hasRasters = rasterUrls && rasterBounds && Object.keys(rasterUrls).length > 0;
   // Calculate initial center from geometry
   const center = useMemo(() => {
     if (!farmGeometry) return [0, 0] as [number, number];
@@ -87,6 +104,25 @@ export const DiagnosticMap: React.FC<DiagnosticMapProps> = ({
 
   return (
     <div className="relative h-full w-full">
+      {/* Raster index selector (shown only when rasters are available) */}
+      {hasRasters && (
+        <div className="absolute top-3 left-3 z-[1000] flex gap-1">
+          {RASTER_INDICES.filter((idx) => rasterUrls![idx]).map((idx) => (
+            <button
+              key={idx}
+              onClick={() => onActiveIndexChange?.(idx)}
+              className={`px-2.5 py-1 rounded-md text-xs font-medium border transition-colors shadow-sm ${
+                activeIndex === idx
+                  ? 'bg-primary text-primary-foreground border-primary'
+                  : 'bg-white/90 backdrop-blur-sm text-gray-700 border-gray-200 hover:bg-white'
+              }`}
+            >
+              {RASTER_INDEX_LABELS[idx]}
+            </button>
+          ))}
+        </div>
+      )}
+
       {/* Base Map Toggle Button */}
       <div className="absolute top-3 right-3 z-[1000]">
         <button
@@ -114,7 +150,7 @@ export const DiagnosticMap: React.FC<DiagnosticMapProps> = ({
         className="rounded-lg"
         preferCanvas={true}
       >
-        {/* Base layer - Conditional based on toggle */}
+        {/* Base layer */}
         {baseMapType === 'satellite' ? (
           <TileLayer
             url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
@@ -127,6 +163,16 @@ export const DiagnosticMap: React.FC<DiagnosticMapProps> = ({
           />
         )}
 
+        {/* Layer 1: Pre-rendered raster overlay (when available) */}
+        {hasRasters && activeIndex && rasterUrls![activeIndex] && (
+          <ImageOverlay
+            url={rasterUrls![activeIndex]}
+            bounds={rasterBounds!}
+            opacity={0.75}
+            zIndex={400}
+          />
+        )}
+
         {/* Farm boundary outline */}
         {farmGeometry && (
           <GeoJSON
@@ -136,39 +182,56 @@ export const DiagnosticMap: React.FC<DiagnosticMapProps> = ({
           />
         )}
 
-        {/* Grid cells with problems - render non-urgent first, urgent on top */}
-        {cells
-          .filter(cell => getCellColor(cell) && getCellOpacity(cell) > 0)
-          .sort((a, b) => {
-            const aUrgent = isUrgentCell(a) ? 1 : 0;
-            const bUrgent = isUrgentCell(b) ? 1 : 0;
-            if (aUrgent !== bUrgent) return aUrgent - bUrgent;
-            return a.problems.length - b.problems.length;
-          })
-          .map((cell) => {
-          const color = getCellColor(cell);
-          const opacity = getCellOpacity(cell);
-          const isSelected = cell.id === selectedCellId;
-          const isOverlap = cell.problems.length > 1;
-          const urgent = isUrgentCell(cell);
-
-          return (
-            <Rectangle
-              key={cell.id}
-              bounds={cell.bounds as [[number, number], [number, number]]}
-              pathOptions={{
-                color: isSelected ? '#ffffff' : urgent ? '#ef4444' : isOverlap ? '#ffffff' : color!,
-                weight: isSelected ? 3 : urgent ? 3 : isOverlap ? 2 : 1,
-                fillColor: color!,
-                fillOpacity: opacity,
-                dashArray: undefined,
-              }}
-              eventHandlers={{
-                click: () => onCellClick?.(cell),
-              }}
-            />
-          );
-        })}
+        {/* Layer 2: Grid cell rectangles
+            - With rasters: transparent click targets (border visible on selection only)
+            - Without rasters: original colored overlays (fallback) */}
+        {hasRasters
+          ? cells
+              .filter((cell) => cell.problems.length > 0)
+              .map((cell) => {
+                const isSelected = cell.id === selectedCellId;
+                return (
+                  <Rectangle
+                    key={cell.id}
+                    bounds={cell.bounds as [[number, number], [number, number]]}
+                    pathOptions={{
+                      fillOpacity: 0,
+                      opacity: isSelected ? 0.9 : 0,
+                      color: '#ffffff',
+                      weight: isSelected ? 2 : 0,
+                    }}
+                    eventHandlers={{ click: () => onCellClick?.(cell) }}
+                  />
+                );
+              })
+          : cells
+              .filter((cell) => getCellColor(cell) && getCellOpacity(cell) > 0)
+              .sort((a, b) => {
+                const aUrgent = isUrgentCell(a) ? 1 : 0;
+                const bUrgent = isUrgentCell(b) ? 1 : 0;
+                if (aUrgent !== bUrgent) return aUrgent - bUrgent;
+                return a.problems.length - b.problems.length;
+              })
+              .map((cell) => {
+                const color = getCellColor(cell);
+                const opacity = getCellOpacity(cell);
+                const isSelected = cell.id === selectedCellId;
+                const isOverlap = cell.problems.length > 1;
+                const urgent = isUrgentCell(cell);
+                return (
+                  <Rectangle
+                    key={cell.id}
+                    bounds={cell.bounds as [[number, number], [number, number]]}
+                    pathOptions={{
+                      color: isSelected ? '#ffffff' : urgent ? '#ef4444' : isOverlap ? '#ffffff' : color!,
+                      weight: isSelected ? 3 : urgent ? 3 : isOverlap ? 2 : 1,
+                      fillColor: color!,
+                      fillOpacity: opacity,
+                    }}
+                    eventHandlers={{ click: () => onCellClick?.(cell) }}
+                  />
+                );
+              })}
 
         {/* Fit bounds to farm */}
         <FitBounds geometry={farmGeometry} />

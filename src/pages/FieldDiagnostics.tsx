@@ -12,8 +12,8 @@ import { Badge } from '@/components/ui/badge';
 import { useToast } from '@/hooks/useToast';
 import { useAbeFarm } from '@/hooks/useAbeFarm';
 import {
-  analyzeFarm,
-  DiagnosticResult,
+  analyzeFarmWithRaster,
+  DiagnosticRasterResult,
   GridCell,
 } from '@/services/diagnosticService';
 import { DiagnosticMap } from '@/components/features/diagnostics/DiagnosticMap';
@@ -41,11 +41,12 @@ const FieldDiagnostics: React.FC = () => {
   const { data: weatherData, loading: weatherLoading, fetchWeather } = useWeather();
 
   // Analysis state
-  const [result, setResult] = useState<DiagnosticResult | null>(null);
+  const [result, setResult] = useState<DiagnosticRasterResult | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [progress, setProgress] = useState(0);
   const [progressMessage, setProgressMessage] = useState('');
   const [selectedCell, setSelectedCell] = useState<GridCell | null>(null);
+  const [activeIndex, setActiveIndex] = useState<string>('ndvi');
 
   // Run analysis when farm is loaded
   const runAnalysis = useCallback(async () => {
@@ -59,7 +60,7 @@ const FieldDiagnostics: React.FC = () => {
     setSelectedCell(null);
 
     try {
-      const analysisResult = await analyzeFarm(
+      const analysisResult = await analyzeFarmWithRaster(
         farmId,
         farm.geometry,
         (prog, msg) => {
@@ -248,11 +249,12 @@ const FieldDiagnostics: React.FC = () => {
                     {progress.toFixed(0)}% complete
                   </p>
                   <p className="text-xs text-muted-foreground mt-1">
-                    {progress < 20 ? 'Connecting to Earth Engine...' :
-                      progress < 50 ? 'Downloading last 2 weeks of imagery...' :
-                        progress < 70 ? 'Building 10m grid cells...' :
-                          progress < 90 ? 'Detecting problem areas...' :
-                            'Finalizing results...'}
+                    {progress >= 80 && progressMessage.includes('cache') ? 'Loaded from cache — instant results' :
+                      progress < 20 ? 'Connecting to Earth Engine...' :
+                        progress < 50 ? 'Downloading last 2 weeks of imagery...' :
+                          progress < 70 ? 'Building 10m grid cells...' :
+                            progress < 90 ? 'Detecting problem areas...' :
+                              'Finalizing results...'}
                   </p>
                 </div>
                 <div className="w-full max-w-xs bg-muted rounded-full h-2">
@@ -286,6 +288,10 @@ const FieldDiagnostics: React.FC = () => {
                     farmGeometry={farm?.geometry}
                     onCellClick={handleCellClick}
                     selectedCellId={selectedCell?.id}
+                    rasterUrls={result.rasterUrls}
+                    rasterBounds={result.bounds}
+                    activeIndex={activeIndex}
+                    onActiveIndexChange={setActiveIndex}
                   />
                   <ProblemDetailPanel
                     cell={selectedCell}

@@ -62,6 +62,13 @@ export interface DiagnosticResult {
   };
 }
 
+export interface DiagnosticRasterResult extends DiagnosticResult {
+  rasterUrls: Record<DiagnosticIndex, string>;
+  bounds: [[number, number], [number, number]]; // [[south, west], [north, east]]
+  cached?: boolean;
+  expiresAt?: string;
+}
+
 export interface TimeSeriesDataPoint {
   date: string;
   mean: number;
@@ -247,6 +254,112 @@ export async function analyzeFarm(
     // Fallback to local analysis if server fails
     onProgress?.(20, 'Server unavailable, using fallback analysis...');
     return await fallbackAnalyzeFarm(farmId, geometry, onProgress, startTime);
+  }
+}
+
+/**
+ * Raster-backed farm analysis.
+ * On cache hit (<24h): returns instantly with pre-rendered PNGs from Supabase Storage.
+ * On cache miss: runs GEE analysis, uploads rasters, then returns results.
+ */
+export async function analyzeFarmWithRaster(
+  farmId: string,
+  geometry: any,
+  onProgress?: (progress: number, message: string) => void
+): Promise<DiagnosticRasterResult> {
+  const startTime = Date.now();
+  onProgress?.(0, 'Starting farm analysis...');
+
+  try {
+    onProgress?.(10, 'Fetching satellite data...');
+
+    const polygon = JSON.stringify(geometry);
+    const apiUrl = buildApiUrl(
+      `/diagnostics?polygon=${encodeURIComponent(polygon)}&farm_id=${encodeURIComponent(farmId)}&days=14`
+    );
+
+    const response = await fetch(apiUrl, {
+      headers: { ...getSupabaseFunctionHeaders() },
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Diagnostics API error: ${response.status} - ${errorText}`);
+    }
+
+    const serverResult = await response.json();
+
+    const isCached = serverResult.cached === true || serverResult.data?.cached === true;
+    onProgress?.(isCached ? 80 : 50, isCached ? 'Loaded from cache...' : 'Processing analysis results...');
+
+    const analysis = serverResult.data?.analysis || serverResult.analysis || {};
+    const serverProblems = serverResult.data?.problems || serverResult.problems || [];
+    const metadata = serverResult.data?.metadata || serverResult.metadata || {};
+    const cellData: SamplePoint[] = serverResult.data?.cell_stats ?? serverResult.cell_stats ?? serverResult.data?.cellData ?? serverResult.cellData ?? [];
+    const rasterUrlsRaw: Record<string, string> = serverResult.data?.raster_urls ?? serverResult.raster_urls ?? {};
+    const boundsRaw: [[number, number], [number, number]] = serverResult.data?.bounds ?? serverResult.bounds ?? [[0, 0], [0, 0]];
+
+    onProgress?.(60, 'Creating grid cells...');
+    const cells = createGridCells(geometry, 10);
+    const problemSummaries: ProblemSummary[] = [];
+    const indexProblems: Map<DiagnosticIndex, { threshold: boolean; trend: boolean; value: number; change: number }> = new Map();
+
+    for (const index of DIAGNOSTIC_INDICES) {
+      const indexData = analysis[index];
+      if (!indexData) continue;
+      const threshold = indexData.belowThreshold || false;
+      const trend = indexData.trendDetected || false;
+      const value = indexData.mean || 0;
+      const change = indexData.trend || 0;
+      indexProblems.set(index, { threshold, trend, value, change });
+      if (threshold || trend) {
+        problemSummaries.push({
+          index,
+          type: threshold && trend ? 'both' : threshold ? 'threshold' : 'trend',
+          cellCount: 0,
+          avgValue: value,
+          avgDecline: change,
+          color: INDEX_COLORS[index],
+          label: INDEX_LABELS[index],
+        });
+      }
+    }
+
+    onProgress?.(75, 'Assigning problems to grid cells...');
+    assignProblemsToCells(cells, indexProblems, problemSummaries, cellData);
+
+    onProgress?.(90, 'Calculating statistics...');
+    const problemCells = cells.filter((c) => c.problems.length > 0);
+    const overlapCells = cells.filter((c) => c.problems.length > 1);
+
+    const result: DiagnosticRasterResult = {
+      cells,
+      problems: problemSummaries,
+      analysisDate: new Date().toISOString(),
+      imagesAnalyzed: metadata.daysAnalyzed || 14,
+      farmStats: {
+        totalCells: cells.length,
+        problemCells: problemCells.length,
+        healthyCells: cells.length - problemCells.length,
+        overlapCells: overlapCells.length,
+      },
+      rasterUrls: rasterUrlsRaw as Record<DiagnosticIndex, string>,
+      bounds: boundsRaw,
+      cached: isCached,
+      expiresAt: serverResult.expires_at || serverResult.data?.expires_at,
+    };
+
+    onProgress?.(100, `Analysis complete in ${((Date.now() - startTime) / 1000).toFixed(1)}s`);
+    return result;
+  } catch (error) {
+    console.error('[diagnosticService] analyzeFarmWithRaster error:', error);
+    onProgress?.(20, 'Falling back to standard analysis...');
+    const base = await analyzeFarm(farmId, geometry, onProgress);
+    return {
+      ...base,
+      rasterUrls: {} as Record<DiagnosticIndex, string>,
+      bounds: [[0, 0], [0, 0]],
+    };
   }
 }
 
