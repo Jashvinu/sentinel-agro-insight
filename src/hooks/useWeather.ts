@@ -2,7 +2,7 @@ import { useState, useCallback } from 'react';
 import { fetchWeatherApi } from 'openmeteo';
 import { useToast } from '@/hooks/useToast';
 
-interface WeatherData {
+export interface WeatherData {
   hourly: {
     time: Date[];
     temperature_2m: Float32Array;

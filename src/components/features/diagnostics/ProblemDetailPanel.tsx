@@ -15,7 +15,9 @@ import {
   getIndexLabel,
   getIndexThresholds,
   isUrgentCell,
+  DiagnosticResult,
 } from '@/services/diagnosticService';
+import { Sparkline } from '@/components/ui/sparkline';
 import {
   X,
   MapPin,
@@ -27,11 +29,13 @@ import {
 
 interface ProblemDetailPanelProps {
   cell: GridCell | null;
+  result: DiagnosticResult | null;
   onClose: () => void;
 }
 
 export const ProblemDetailPanel: React.FC<ProblemDetailPanelProps> = ({
   cell,
+  result,
   onClose,
 }) => {
   if (!cell) return null;
@@ -89,9 +93,16 @@ export const ProblemDetailPanel: React.FC<ProblemDetailPanelProps> = ({
 
         {/* Problem list */}
         <div className="space-y-3">
-          {cell.problems.map((problem, idx) => (
-            <ProblemItem key={idx} problem={problem} />
-          ))}
+          {cell.problems.map((problem, idx) => {
+             const farmLevelProblem = result?.problems.find(p => p.index === problem.index);
+             return (
+               <ProblemItem 
+                 key={idx} 
+                 problem={problem} 
+                 farmAvg={farmLevelProblem?.avgValue} 
+               />
+             );
+          })}
         </div>
 
         {/* Recommendations */}
@@ -118,12 +129,16 @@ export const ProblemDetailPanel: React.FC<ProblemDetailPanelProps> = ({
 
 interface ProblemItemProps {
   problem: CellProblem;
+  farmAvg?: number;
 }
 
-const ProblemItem: React.FC<ProblemItemProps> = ({ problem }) => {
+const ProblemItem: React.FC<ProblemItemProps> = ({ problem, farmAvg }) => {
   const color = getIndexColor(problem.index);
   const label = getIndexLabel(problem.index);
   const thresholds = getIndexThresholds(problem.index);
+  const farmDeltaPercent = farmAvg ? ((problem.currentValue - farmAvg) / farmAvg) * 100 : 0;
+  const farmDeltaIsBetter = problem.currentValue >= farmAvg && problem.currentValue >= thresholds.low;
+  const trendSuffix = problem.changeUnit === 'points' ? ' pts' : '%';
 
   const getIcon = () => {
     switch (problem.type) {
@@ -145,39 +160,56 @@ const ProblemItem: React.FC<ProblemItemProps> = ({ problem }) => {
         />
         <span className="text-sm font-medium">{label}</span>
         <span className="text-muted-foreground">{getIcon()}</span>
+        {problem.confidence && (
+          <Badge variant="outline" className="ml-auto text-[10px] uppercase px-1.5 py-0">
+            {problem.confidence}
+          </Badge>
+        )}
         {problem.urgent && (
-          <span className="ml-auto text-[10px] font-semibold text-red-600 bg-red-100 px-1.5 py-0.5 rounded-full">
+          <span className="text-[10px] font-semibold text-red-600 bg-red-100 px-1.5 py-0.5 rounded-full">
             Urgent
           </span>
         )}
       </div>
 
-      <div className="grid grid-cols-2 gap-2 text-xs">
-        <div>
-          <span className="text-muted-foreground">Current: </span>
-          <span className="font-medium">{problem.currentValue.toFixed(1)}</span>
-        </div>
-        <div>
-          <span className="text-muted-foreground">Threshold: </span>
-          <span className="font-medium">{problem.threshold}</span>
-        </div>
-        {problem.previousValue !== undefined && (
+      <div className="flex flex-col gap-2 mt-2">
+        <div className="grid grid-cols-2 gap-2 text-xs">
           <div>
-            <span className="text-muted-foreground">Previous: </span>
-            <span className="font-medium">{problem.previousValue.toFixed(1)}</span>
+            <span className="text-muted-foreground">Current: </span>
+            <span className="font-medium">{problem.currentValue.toFixed(1)}</span>
           </div>
-        )}
-        {problem.changePercent !== undefined && (
           <div>
-            <span className="text-muted-foreground">Change: </span>
-            <span className={`font-medium ${problem.changePercent < 0 ? 'text-red-500' : 'text-green-500'}`}>
-              {problem.changePercent > 0 ? '+' : ''}{problem.changePercent.toFixed(1)}%
-            </span>
+            <span className="text-muted-foreground">Threshold: </span>
+            <span className="font-medium">{problem.threshold}</span>
+          </div>
+          {farmAvg !== undefined && farmAvg !== 0 && (
+            <div className="col-span-2 pt-1 border-t mt-1">
+              <div className="flex justify-between items-center">
+                <span className="text-muted-foreground">Vs Farm Avg ({farmAvg.toFixed(1)}): </span>
+                <span className={`font-medium ${problem.currentValue < farmAvg ? 'text-red-500' : farmDeltaIsBetter ? 'text-green-500' : 'text-amber-600'}`}>
+                  {farmDeltaPercent > 0 ? '+' : ''}{farmDeltaPercent.toFixed(0)}%
+                </span>
+              </div>
+            </div>
+          )}
+        </div>
+        
+        {problem.previousValue !== undefined && (
+          <div className="pt-2 border-t mt-1 flex justify-between items-center">
+            <div className="text-[10px] text-muted-foreground flex flex-col">
+              <span>Trajectory</span>
+              <span className={`font-medium ${problem.changePercent && problem.changePercent < 0 ? 'text-red-500' : 'text-green-500'}`}>
+                {problem.changePercent && problem.changePercent > 0 ? '+' : ''}{problem.changePercent?.toFixed(1)}{trendSuffix}
+              </span>
+            </div>
+            <div className="w-16 h-6 opacity-80" title="Recent value change">
+               <Sparkline data={[problem.previousValue, problem.currentValue]} color={color} strokeWidth={2}/>
+            </div>
           </div>
         )}
       </div>
 
-      <p className="text-xs text-muted-foreground mt-1">{problem.message}</p>
+      <p className="text-xs text-muted-foreground mt-2 leading-relaxed">{problem.message}</p>
     </div>
   );
 };

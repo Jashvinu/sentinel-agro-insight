@@ -5,28 +5,23 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { Skeleton } from "@/components/ui/skeleton";
-import Dashboard from "./pages/Dashboard";
-import YieldPrediction from "./pages/YieldPrediction";
-import DrawPolygon from "./pages/DrawPolygon";
-import NotFound from "./pages/NotFound";
-import { AdvancedMonitoring } from "./pages/AdvancedMonitoring";
+import PlotDesigner from "./pages/PlotDesigner";
 import FieldDiagnostics from "./pages/FieldDiagnostics";
+import NotFound from "./pages/NotFound";
 import { useAutoSync } from "@/hooks/useAutoSync";
 import { ProtectedRoute } from "@/components/ProtectedRoute";
 
-// Create a new QueryClient instance
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      staleTime: 5 * 60 * 1000, // 5 minutes
-      gcTime: 10 * 60 * 1000, // 10 minutes (formerly cacheTime)
+      staleTime: 5 * 60 * 1000,
+      gcTime: 10 * 60 * 1000,
       retry: 3,
       retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 30000),
     },
   },
 });
 
-// Loading component
 const LoadingFallback = () => (
   <div className="flex items-center justify-center min-h-screen">
     <div className="space-y-4 w-full max-w-md">
@@ -37,7 +32,6 @@ const LoadingFallback = () => (
   </div>
 );
 
-// Error boundary component
 class ErrorBoundary extends React.Component<
   { children: React.ReactNode },
   { hasError: boolean; error?: Error }
@@ -81,69 +75,39 @@ class ErrorBoundary extends React.Component<
   }
 }
 
-// Component to handle auto-sync on app load
 const AppContent = () => {
-  useAutoSync(); // Automatically sync satellite observations on load
+  useAutoSync();
 
   return (
     <BrowserRouter>
       <Suspense fallback={<LoadingFallback />}>
         <Routes>
-          {/* MVP Mode: Login/Signup routes redirect to dashboard */}
-          <Route path="/login" element={<Navigate to="/dashboard" replace />} />
-          <Route path="/signup" element={<Navigate to="/dashboard" replace />} />
-
-          {/* Protected routes - MVP mode bypasses auth */}
+          {/* MVP flow: design a plot, then analyze it */}
           <Route
             path="/"
             element={
-              <ProtectedRoute requireFarm={true}>
-                <Dashboard />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/dashboard"
-            element={
-              <ProtectedRoute requireFarm={true}>
-                <Dashboard />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/yield-prediction"
-            element={
-              <ProtectedRoute requireFarm={true}>
-                <YieldPrediction />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/advanced-monitoring"
-            element={
-              <ProtectedRoute requireFarm={true}>
-                <AdvancedMonitoring />
+              <ProtectedRoute>
+                <PlotDesigner />
               </ProtectedRoute>
             }
           />
           <Route
             path="/field-diagnostics"
             element={
-              <ProtectedRoute requireFarm={true}>
+              <ProtectedRoute requireFarm>
                 <FieldDiagnostics />
               </ProtectedRoute>
             }
           />
-          <Route
-            path="/draw-polygon"
-            element={
-              <ProtectedRoute>
-                <DrawPolygon />
-              </ProtectedRoute>
-            }
-          />
 
-          {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
+          {/* Legacy routes — fold back into the new flow */}
+          <Route path="/login" element={<Navigate to="/" replace />} />
+          <Route path="/signup" element={<Navigate to="/" replace />} />
+          <Route path="/dashboard" element={<Navigate to="/" replace />} />
+          <Route path="/yield-prediction" element={<Navigate to="/" replace />} />
+          <Route path="/advanced-monitoring" element={<Navigate to="/" replace />} />
+          <Route path="/draw-polygon" element={<Navigate to="/" replace />} />
+
           <Route path="*" element={<NotFound />} />
         </Routes>
       </Suspense>

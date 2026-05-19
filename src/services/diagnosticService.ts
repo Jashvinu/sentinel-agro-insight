@@ -7,17 +7,22 @@
 import { buildApiUrl, getSupabaseFunctionHeaders } from './api';
 import { API_ENDPOINTS } from '@/constants';
 import * as turf from '@turf/turf';
+import type { MultiPolygon, Polygon } from 'geojson';
 
 // Types
-export type DiagnosticIndex = 'nitrogen' | 'moisture' | 'ndvi' | 'phosphorus';
+export type DiagnosticIndex = 'nitrogen' | 'phosphorus' | 'potassium' | 'moisture' | 'ndvi';
+export type DiagnosticConfidence = 'high' | 'medium' | 'low';
+export type DiagnosticTrendUnit = 'percent' | 'points';
+type FarmGeometry = Polygon | MultiPolygon;
 
 export interface SamplePoint {
   lat: number;
   lng: number;
   nitrogen: number | null;
+  phosphorus: number | null;
+  potassium: number | null;
   moisture: number | null;
   ndvi: number | null;
-  phosphorus: number | null;
 }
 
 export interface CellProblem {
@@ -27,6 +32,9 @@ export interface CellProblem {
   previousValue?: number;
   threshold: number;
   changePercent?: number;
+  changeUnit?: DiagnosticTrendUnit;
+  confidence?: DiagnosticConfidence;
+  severityScore?: number;
   message: string;
   urgent: boolean;
 }
@@ -45,6 +53,8 @@ export interface ProblemSummary {
   cellCount: number;
   avgValue?: number;
   avgDecline?: number;
+  avgDeclineUnit?: DiagnosticTrendUnit;
+  confidence?: DiagnosticConfidence;
   color: string;
   label: string;
 }
@@ -54,6 +64,14 @@ export interface DiagnosticResult {
   problems: ProblemSummary[];
   analysisDate: string;
   imagesAnalyzed: number;
+  cloudCover?: number;
+  history?: Record<DiagnosticIndex, TimeSeriesDataPoint[]>;
+  nutrientModel?: {
+    version: string;
+    unit: string;
+    confidenceByIndex?: Partial<Record<DiagnosticIndex, DiagnosticConfidence>>;
+    references?: string[];
+  };
   farmStats: {
     totalCells: number;
     problemCells: number;
@@ -78,8 +96,39 @@ export interface TimeSeriesDataPoint {
   cloudCover?: number;
 }
 
+interface TimeSeriesWindow {
+  startDate?: string;
+  endDate?: string;
+  mean: number;
+  min: number;
+  max: number;
+  stdDev: number;
+  cloudCover?: number;
+}
+
+interface AgriculturalIndexResponse {
+  data?: {
+    windows?: TimeSeriesWindow[];
+  };
+  mean_value?: number;
+  min_value?: number;
+  max_value?: number;
+  std_dev?: number;
+  cloudCover?: number;
+}
+
 // Configuration
-const DIAGNOSTIC_INDICES: DiagnosticIndex[] = ['nitrogen', 'moisture', 'ndvi', 'phosphorus'];
+const DIAGNOSTIC_INDICES: DiagnosticIndex[] = ['nitrogen', 'phosphorus', 'potassium', 'moisture', 'ndvi'];
+const NPK_INDICES = new Set<DiagnosticIndex>(['nitrogen', 'phosphorus', 'potassium']);
+
+interface IndexAnalysis {
+  threshold: boolean;
+  trend: boolean;
+  value: number;
+  change: number;
+  changeUnit: DiagnosticTrendUnit;
+  confidence: DiagnosticConfidence;
+}
 
 // Season-aware thresholds - adjusted for crop phenology
 // Winter: dormant fields, low expectations
@@ -98,28 +147,32 @@ function getCurrentSeason(): Season {
 
 const SEASONAL_THRESHOLDS: Record<Season, Record<DiagnosticIndex, { low: number; warning: number }>> = {
   winter: {
-    nitrogen: { low: 15, warning: 30 },
+    nitrogen: { low: 35, warning: 50 },
+    phosphorus: { low: 30, warning: 45 },
+    potassium: { low: 35, warning: 50 },
     moisture: { low: 2, warning: 5 },
     ndvi: { low: 0.02, warning: 0.05 },      // MSAVI2 - bare soil/dormant
-    phosphorus: { low: 4, warning: 10 },
   },
   spring: {
-    nitrogen: { low: 40, warning: 65 },
+    nitrogen: { low: 45, warning: 60 },
+    phosphorus: { low: 35, warning: 50 },
+    potassium: { low: 40, warning: 58 },
     moisture: { low: 6, warning: 10 },
     ndvi: { low: 0.08, warning: 0.15 },      // MSAVI2 - early growth
-    phosphorus: { low: 10, warning: 20 },
   },
   summer: {
-    nitrogen: { low: 60, warning: 90 },
+    nitrogen: { low: 50, warning: 65 },
+    phosphorus: { low: 35, warning: 52 },
+    potassium: { low: 45, warning: 62 },
     moisture: { low: 8, warning: 14 },
     ndvi: { low: 0.12, warning: 0.20 },      // MSAVI2 - peak canopy
-    phosphorus: { low: 15, warning: 28 },
   },
   fall: {
-    nitrogen: { low: 30, warning: 50 },
+    nitrogen: { low: 40, warning: 55 },
+    phosphorus: { low: 32, warning: 48 },
+    potassium: { low: 38, warning: 55 },
     moisture: { low: 5, warning: 9 },
     ndvi: { low: 0.06, warning: 0.12 },      // MSAVI2 - senescence
-    phosphorus: { low: 8, warning: 16 },
   },
 };
 
@@ -128,19 +181,30 @@ function getSeasonalThresholds(): Record<DiagnosticIndex, { low: number; warning
 }
 
 const TREND_THRESHOLD_PERCENT = -30; // 30% decline triggers trend alert
+const NUTRIENT_TREND_THRESHOLD_POINTS = -15;
 
 const INDEX_COLORS: Record<DiagnosticIndex, string> = {
   nitrogen: '#ef4444',    // Red
+  phosphorus: '#eab308',  // Yellow
+  potassium: '#10b981',   // Emerald
   moisture: '#3b82f6',    // Blue
   ndvi: '#22c55e',        // Green
-  phosphorus: '#eab308',  // Yellow
 };
 
 const INDEX_LABELS: Record<DiagnosticIndex, string> = {
   nitrogen: 'Nitrogen',
+  phosphorus: 'Phosphorus',
+  potassium: 'Potassium',
   moisture: 'Soil Moisture',
   ndvi: 'Crop Health',
-  phosphorus: 'Phosphorus',
+};
+
+const INDEX_CONFIDENCE: Record<DiagnosticIndex, DiagnosticConfidence> = {
+  nitrogen: 'high',
+  phosphorus: 'low',
+  potassium: 'medium',
+  moisture: 'medium',
+  ndvi: 'high',
 };
 
 const MULTIPLE_PROBLEM_COLOR = '#a855f7'; // Purple
@@ -152,7 +216,7 @@ const MULTIPLE_PROBLEM_COLOR = '#a855f7'; // Purple
  */
 export async function analyzeFarm(
   farmId: string,
-  geometry: any,
+  geometry: FarmGeometry,
   onProgress?: (progress: number, message: string) => void
 ): Promise<DiagnosticResult> {
   const startTime = Date.now();
@@ -163,7 +227,7 @@ export async function analyzeFarm(
     onProgress?.(10, 'Fetching satellite data from Earth Engine...');
 
     const polygon = JSON.stringify(geometry);
-    const url = buildApiUrl(`/diagnostics?polygon=${encodeURIComponent(polygon)}&days=14`);
+    const url = buildApiUrl(`/diagnostics?polygon=${encodeURIComponent(polygon)}&days=14&cloud=50`);
 
     const response = await fetch(url, {
       headers: {
@@ -185,7 +249,7 @@ export async function analyzeFarm(
 
     // Map server analysis results to our format
     const problemSummaries: ProblemSummary[] = [];
-    const indexProblems: Map<DiagnosticIndex, { threshold: boolean; trend: boolean; value: number; change: number }> = new Map();
+    const indexProblems: Map<DiagnosticIndex, IndexAnalysis> = new Map();
 
     // Process server analysis results
     const analysis = serverResult.data?.analysis || serverResult.analysis || {};
@@ -204,9 +268,11 @@ export async function analyzeFarm(
       const threshold = indexData.belowThreshold || false;
       const trend = indexData.trendDetected || false;
       const value = indexData.mean || 0;
-      const change = indexData.trend || 0;
+      const confidence = getAnalysisConfidence(index, indexData, metadata);
+      const changeUnit = getAnalysisTrendUnit(index, indexData);
+      const change = normalizeTrendChange(index, indexData.trend || 0, value, changeUnit, indexData);
 
-      indexProblems.set(index, { threshold, trend, value, change });
+      indexProblems.set(index, { threshold, trend, value, change, changeUnit, confidence });
 
       if (threshold || trend) {
         problemSummaries.push({
@@ -215,6 +281,8 @@ export async function analyzeFarm(
           cellCount: 0, // Will be updated after cell assignment
           avgValue: value,
           avgDecline: change,
+          avgDeclineUnit: changeUnit,
+          confidence,
           color: INDEX_COLORS[index],
           label: INDEX_LABELS[index],
         });
@@ -236,7 +304,9 @@ export async function analyzeFarm(
       cells,
       problems: problemSummaries,
       analysisDate: new Date().toISOString(),
-      imagesAnalyzed: metadata.daysAnalyzed || metadata.imagesAnalyzed || 14,
+      imagesAnalyzed: metadata.imagesAnalyzed || metadata.daysAnalyzed || 14,
+      cloudCover: metadata.cloudCover || metadata.cloud_cover,
+      nutrientModel: metadata.nutrientModel,
       farmStats: {
         totalCells: cells.length,
         problemCells: problemCells.length,
@@ -264,7 +334,7 @@ export async function analyzeFarm(
  */
 export async function analyzeFarmWithRaster(
   farmId: string,
-  geometry: any,
+  geometry: FarmGeometry,
   onProgress?: (progress: number, message: string) => void
 ): Promise<DiagnosticRasterResult> {
   const startTime = Date.now();
@@ -275,12 +345,17 @@ export async function analyzeFarmWithRaster(
 
     const polygon = JSON.stringify(geometry);
     const apiUrl = buildApiUrl(
-      `/diagnostics?polygon=${encodeURIComponent(polygon)}&farm_id=${encodeURIComponent(farmId)}&days=14`
+      `/diagnostics?polygon=${encodeURIComponent(polygon)}&farm_id=${encodeURIComponent(farmId)}&days=14&cloud=50`
     );
 
-    const response = await fetch(apiUrl, {
-      headers: { ...getSupabaseFunctionHeaders() },
-    });
+    // Fetch server diagnostics and time-series history concurrently
+    const [response, timeSeriesResults] = await Promise.all([
+      fetch(apiUrl, { headers: { ...getSupabaseFunctionHeaders() } }),
+      fetchAllIndicesTimeSeries(geometry).catch(e => {
+        console.warn('Failed to fetch time series:', e);
+        return {};
+      })
+    ]);
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -302,7 +377,7 @@ export async function analyzeFarmWithRaster(
     onProgress?.(60, 'Creating grid cells...');
     const cells = createGridCells(geometry, 10);
     const problemSummaries: ProblemSummary[] = [];
-    const indexProblems: Map<DiagnosticIndex, { threshold: boolean; trend: boolean; value: number; change: number }> = new Map();
+    const indexProblems: Map<DiagnosticIndex, IndexAnalysis> = new Map();
 
     for (const index of DIAGNOSTIC_INDICES) {
       const indexData = analysis[index];
@@ -310,8 +385,10 @@ export async function analyzeFarmWithRaster(
       const threshold = indexData.belowThreshold || false;
       const trend = indexData.trendDetected || false;
       const value = indexData.mean || 0;
-      const change = indexData.trend || 0;
-      indexProblems.set(index, { threshold, trend, value, change });
+      const confidence = getAnalysisConfidence(index, indexData, metadata);
+      const changeUnit = getAnalysisTrendUnit(index, indexData);
+      const change = normalizeTrendChange(index, indexData.trend || 0, value, changeUnit, indexData);
+      indexProblems.set(index, { threshold, trend, value, change, changeUnit, confidence });
       if (threshold || trend) {
         problemSummaries.push({
           index,
@@ -319,6 +396,8 @@ export async function analyzeFarmWithRaster(
           cellCount: 0,
           avgValue: value,
           avgDecline: change,
+          avgDeclineUnit: changeUnit,
+          confidence,
           color: INDEX_COLORS[index],
           label: INDEX_LABELS[index],
         });
@@ -336,7 +415,9 @@ export async function analyzeFarmWithRaster(
       cells,
       problems: problemSummaries,
       analysisDate: new Date().toISOString(),
-      imagesAnalyzed: metadata.daysAnalyzed || 14,
+      imagesAnalyzed: metadata.imagesAnalyzed || metadata.daysAnalyzed || 14,
+      cloudCover: metadata.cloudCover || metadata.cloud_cover,
+      nutrientModel: metadata.nutrientModel,
       farmStats: {
         totalCells: cells.length,
         problemCells: problemCells.length,
@@ -347,6 +428,7 @@ export async function analyzeFarmWithRaster(
       bounds: boundsRaw,
       cached: isCached,
       expiresAt: serverResult.expires_at || serverResult.data?.expires_at,
+      history: timeSeriesResults as Record<DiagnosticIndex, TimeSeriesDataPoint[]>,
     };
 
     onProgress?.(100, `Analysis complete in ${((Date.now() - startTime) / 1000).toFixed(1)}s`);
@@ -368,7 +450,7 @@ export async function analyzeFarmWithRaster(
  */
 async function fallbackAnalyzeFarm(
   farmId: string,
-  geometry: any,
+  geometry: FarmGeometry,
   onProgress?: (progress: number, message: string) => void,
   startTime?: number
 ): Promise<DiagnosticResult> {
@@ -385,7 +467,7 @@ async function fallbackAnalyzeFarm(
 
   // Analyze each index for problems
   const problemSummaries: ProblemSummary[] = [];
-  const indexProblems: Map<DiagnosticIndex, { threshold: boolean; trend: boolean; value: number; change: number }> = new Map();
+  const indexProblems: Map<DiagnosticIndex, IndexAnalysis> = new Map();
 
   for (const index of DIAGNOSTIC_INDICES) {
     const data = timeSeriesResults[index];
@@ -401,6 +483,8 @@ async function fallbackAnalyzeFarm(
         cellCount: 0, // Will be updated after cell assignment
         avgValue: analysis.value,
         avgDecline: analysis.change,
+        avgDeclineUnit: analysis.changeUnit,
+        confidence: analysis.confidence,
         color: INDEX_COLORS[index],
         label: INDEX_LABELS[index],
       });
@@ -439,7 +523,7 @@ async function fallbackAnalyzeFarm(
  * Fetch time-series data for all diagnostic indices
  */
 async function fetchAllIndicesTimeSeries(
-  geometry: any
+  geometry: FarmGeometry
 ): Promise<Record<DiagnosticIndex, TimeSeriesDataPoint[]>> {
   const polygon = JSON.stringify(geometry);
   const endDate = new Date().toISOString().split('T')[0];
@@ -447,9 +531,10 @@ async function fetchAllIndicesTimeSeries(
 
   const results: Record<DiagnosticIndex, TimeSeriesDataPoint[]> = {
     nitrogen: [],
+    phosphorus: [],
+    potassium: [],
     moisture: [],
     ndvi: [],
-    phosphorus: [],
   };
 
   // Fetch all indices in parallel
@@ -469,14 +554,14 @@ async function fetchAllIndicesTimeSeries(
         return { index, data: [] };
       }
 
-      const json = await response.json();
+      const json = (await response.json()) as AgriculturalIndexResponse;
 
       // Handle time-series response format
       if (json.data?.windows) {
         const windows = json.data.windows;
         return {
           index,
-          data: windows.map((w: any) => ({
+          data: windows.map((w) => ({
             date: w.startDate || w.endDate,
             mean: w.mean,
             min: w.min,
@@ -523,13 +608,20 @@ async function fetchAllIndicesTimeSeries(
 function analyzeIndexData(
   index: DiagnosticIndex,
   data: TimeSeriesDataPoint[]
-): { threshold: boolean; trend: boolean; value: number; change: number } {
+): IndexAnalysis {
   if (data.length === 0) {
-    return { threshold: false, trend: false, value: 0, change: 0 };
+    return {
+      threshold: false,
+      trend: false,
+      value: 0,
+      change: 0,
+      changeUnit: 'percent',
+      confidence: INDEX_CONFIDENCE[index],
+    };
   }
 
   // Get current value (most recent)
-  const currentValue = data[data.length - 1].mean;
+  const currentValue = normalizeDiagnosticValue(index, data[data.length - 1].mean);
   const thresholds = getSeasonalThresholds()[index];
 
   // Only flag critical threshold violations (below 'low', not 'warning')
@@ -538,30 +630,102 @@ function analyzeIndexData(
   // Trend detection (compare first and last)
   let change = 0;
   let trend = false;
+  const changeUnit: DiagnosticTrendUnit = NPK_INDICES.has(index) ? 'points' : 'percent';
   if (data.length >= 2) {
-    const firstValue = data[0].mean;
-    const lastValue = data[data.length - 1].mean;
+    const firstValue = normalizeDiagnosticValue(index, data[0].mean);
+    const lastValue = currentValue;
 
-    if (firstValue !== 0) {
+    if (changeUnit === 'points') {
+      change = lastValue - firstValue;
+      trend = change < NUTRIENT_TREND_THRESHOLD_POINTS && lastValue < thresholds.warning;
+    } else if (firstValue > 0) {
       change = ((lastValue - firstValue) / firstValue) * 100;
-      trend = change < TREND_THRESHOLD_PERCENT;
+      trend = change < TREND_THRESHOLD_PERCENT && lastValue < thresholds.warning;
     }
   }
 
-  return { threshold, trend, value: currentValue, change };
+  return { threshold, trend, value: currentValue, change, changeUnit, confidence: INDEX_CONFIDENCE[index] };
+}
+
+function normalizeDiagnosticValue(index: DiagnosticIndex, value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return NPK_INDICES.has(index) ? Math.max(0, Math.min(100, value)) : value;
+}
+
+function getAnalysisConfidence(
+  index: DiagnosticIndex,
+  indexData: Record<string, unknown>,
+  metadata: { nutrientModel?: DiagnosticResult['nutrientModel'] }
+): DiagnosticConfidence {
+  const explicit = indexData.confidence;
+  if (explicit === 'high' || explicit === 'medium' || explicit === 'low') {
+    return explicit;
+  }
+
+  const modelConfidence = metadata.nutrientModel?.confidenceByIndex?.[index];
+  return modelConfidence || INDEX_CONFIDENCE[index];
+}
+
+function getAnalysisTrendUnit(
+  index: DiagnosticIndex,
+  indexData: Record<string, unknown>
+): DiagnosticTrendUnit {
+  if (indexData.trendUnit === 'points' || indexData.trendUnit === 'percent') {
+    return NPK_INDICES.has(index) ? 'points' : indexData.trendUnit;
+  }
+
+  return NPK_INDICES.has(index) ? 'points' : 'percent';
+}
+
+function normalizeTrendChange(
+  index: DiagnosticIndex,
+  rawChange: number,
+  currentValue: number,
+  changeUnit: DiagnosticTrendUnit,
+  indexData: Record<string, unknown>
+): number {
+  if (!Number.isFinite(rawChange)) return 0;
+  if (!NPK_INDICES.has(index) || changeUnit === 'percent') return rawChange;
+
+  const explicitUnit = indexData.trendUnit;
+  const unitText = String(indexData.unit || '').toLowerCase();
+
+  if (explicitUnit === 'points' || unitText.includes('sufficiency')) {
+    return Math.max(-100, Math.min(100, rawChange));
+  }
+
+  // Legacy diagnostics responses reported nutrient trends as large percentage-like
+  // values. Convert those to score-point movement from the current 0-100 score.
+  const converted = (rawChange / 100) * Math.max(Math.abs(currentValue), 1);
+  return Math.max(-100, Math.min(100, converted));
+}
+
+function derivePreviousValue(currentValue: number, analysis: IndexAnalysis): number | undefined {
+  if (!analysis.trend) return undefined;
+
+  if (analysis.changeUnit === 'points') {
+    const previous = currentValue - analysis.change;
+    return Number.isFinite(previous) && previous >= 0 ? previous : undefined;
+  }
+
+  const denominator = 1 + analysis.change / 100;
+  if (denominator <= 0.05) return undefined;
+
+  const previous = currentValue / denominator;
+  return Number.isFinite(previous) && previous >= 0 ? previous : undefined;
 }
 
 /**
  * Create a grid of cells covering the farm polygon.
  * For MultiPolygon, iterates each polygon separately for reliable coverage.
  */
-function createGridCells(geometry: any, resolution: number = 10): GridCell[] {
+function createGridCells(geometry: FarmGeometry, resolution: number = 10): GridCell[] {
   const cells: GridCell[] = [];
   let cellId = 0;
 
   try {
     // Break MultiPolygon into individual polygons for per-polygon grid generation
-    const polygons: any[] = [];
+    const polygons: Polygon[] = [];
     if (geometry.type === 'MultiPolygon') {
       for (const coords of geometry.coordinates) {
         polygons.push({ type: 'Polygon', coordinates: coords });
@@ -683,7 +847,7 @@ function propagateSamplesToNearbyCells(
  */
 function assignProblemsToCells(
   cells: GridCell[],
-  indexProblems: Map<DiagnosticIndex, { threshold: boolean; trend: boolean; value: number; change: number }>,
+  indexProblems: Map<DiagnosticIndex, IndexAnalysis>,
   problemSummaries: ProblemSummary[],
   cellData: SamplePoint[] = []
 ): void {
@@ -717,51 +881,46 @@ function assignProblemsToCells(
         }
       }
 
-      // Check each index with a detected farm-wide problem
-      for (const [index, analysis] of indexProblems) {
-        if (!analysis.threshold && !analysis.trend) continue;
-
+      // Check each available index locally. This catches nutrient hotspots even
+      // when the farm-wide average is still acceptable.
+      for (const index of DIAGNOSTIC_INDICES) {
+        const analysis = indexProblems.get(index);
+        if (!analysis) continue;
         const cellValue = avgValues[index];
         if (cellValue === undefined) continue;
 
         const thresholds = seasonalThresholds[index];
 
-        // Per-cell threshold check: flag only cells that actually violate
         const cellBelowThreshold = cellValue < thresholds.low;
         const cellBelowWarning = cellValue < thresholds.warning;
-
-        // For threshold problems, cell must be below threshold
-        // For trend problems, cell must at least be below warning level
-        const shouldFlag = analysis.threshold
-          ? cellBelowThreshold
-          : cellBelowWarning; // Trend-only: flag stressed cells
+        const shouldFlag = cellBelowThreshold || (analysis.trend && cellBelowWarning);
 
         if (!shouldFlag) continue;
 
-        const problemType = analysis.threshold && analysis.trend ? 'both' : (analysis.threshold ? 'threshold' : 'trend');
+        const problemType = cellBelowThreshold && analysis.trend ? 'both' : (cellBelowThreshold ? 'threshold' : 'trend');
         const changePercent = analysis.trend ? analysis.change : undefined;
+        const severityScore = calculateProblemSeverity(index, cellValue, analysis);
+        const previousValue = derivePreviousValue(cellValue, analysis);
 
         const problem: CellProblem = {
           index,
           type: problemType,
           currentValue: cellValue,
-          previousValue: analysis.trend ? cellValue / (1 + analysis.change / 100) : undefined,
+          previousValue,
           threshold: thresholds.low,
           changePercent,
+          changeUnit: analysis.changeUnit,
+          confidence: analysis.confidence,
+          severityScore,
           message: generateProblemMessage(index, analysis, cellValue),
-          urgent: classifyUrgent({ type: problemType, index, changePercent }),
+          urgent: classifyUrgent({ type: problemType, index, changePercent, severityScore }),
         };
 
         cell.problems.push(problem);
       }
     }
 
-    // Update problem summaries with actual cell counts
-    for (const summary of problemSummaries) {
-      summary.cellCount = cells.filter(c =>
-        c.problems.some(p => p.index === summary.index)
-      ).length;
-    }
+    rebuildProblemSummaries(cells, indexProblems, problemSummaries);
   } else {
     // --- RANDOM FALLBACK: existing behavior when no cellData ---
     console.log('[diagnosticService] No sample data available, using random placement fallback');
@@ -791,16 +950,21 @@ function assignProblemsToCells(
         const cellValue = analysis.value + variation;
         const problemType = analysis.threshold && analysis.trend ? 'both' : (analysis.threshold ? 'threshold' : 'trend');
         const changePercent = analysis.trend ? analysis.change : undefined;
+        const severityScore = calculateProblemSeverity(index, cellValue, analysis);
+        const previousValue = derivePreviousValue(cellValue, analysis);
 
         const problem: CellProblem = {
           index,
           type: problemType,
           currentValue: cellValue,
-          previousValue: analysis.trend ? cellValue / (1 + analysis.change / 100) : undefined,
+          previousValue,
           threshold: thresholds.low,
           changePercent,
+          changeUnit: analysis.changeUnit,
+          confidence: analysis.confidence,
+          severityScore,
           message: generateProblemMessage(index, analysis, cellValue),
-          urgent: classifyUrgent({ type: problemType, index, changePercent }),
+          urgent: classifyUrgent({ type: problemType, index, changePercent, severityScore }),
         };
 
         cell.problems.push(problem);
@@ -809,20 +973,82 @@ function assignProblemsToCells(
       const summary = problemSummaries.find(p => p.index === index);
       if (summary) {
         summary.cellCount = numAffected;
+        summary.confidence = analysis.confidence;
       }
     });
   }
 
-  // Update cell severities - overlap (multiple issues) = critical
+  // Update cell severities from the strongest local signal and overlap risk.
   cells.forEach(cell => {
     if (cell.problems.length === 0) {
       cell.severity = 'none';
-    } else if (cell.problems.length === 1) {
-      cell.severity = 'low';
-    } else {
+      return;
+    }
+
+    const maxSeverity = getCellSeverityScore(cell);
+    if (cell.problems.length > 1 || maxSeverity >= 0.72 || cell.problems.some(p => p.urgent)) {
       cell.severity = 'high';
+    } else if (maxSeverity >= 0.45) {
+      cell.severity = 'medium';
+    } else {
+      cell.severity = 'low';
     }
   });
+}
+
+function calculateProblemSeverity(
+  index: DiagnosticIndex,
+  cellValue: number,
+  analysis: IndexAnalysis
+): number {
+  const thresholds = getSeasonalThresholds()[index];
+  const denominator = Math.max(thresholds.warning, 1);
+  const thresholdPressure = Math.max(0, (thresholds.warning - cellValue) / denominator);
+  const criticalBoost = cellValue < thresholds.low ? 0.32 : 0;
+  const trendBoost = analysis.trend
+    ? Math.min(Math.abs(analysis.change) / (analysis.changeUnit === 'points' ? 50 : 100), 0.35)
+    : 0;
+  const confidencePenalty = analysis.confidence === 'low' ? -0.08 : analysis.confidence === 'medium' ? -0.03 : 0;
+
+  return Math.max(0.15, Math.min(1, thresholdPressure + criticalBoost + trendBoost + confidencePenalty));
+}
+
+function rebuildProblemSummaries(
+  cells: GridCell[],
+  indexProblems: Map<DiagnosticIndex, IndexAnalysis>,
+  problemSummaries: ProblemSummary[]
+): void {
+  const nextSummaries: ProblemSummary[] = [];
+
+  for (const index of DIAGNOSTIC_INDICES) {
+    const problems = cells.flatMap((cell) => cell.problems.filter((problem) => problem.index === index));
+    if (problems.length === 0) continue;
+
+    const analysis = indexProblems.get(index);
+    const hasBoth = problems.some((problem) => problem.type === 'both');
+    const hasThreshold = problems.some((problem) => problem.type === 'threshold');
+    const type: ProblemSummary['type'] = hasBoth ? 'both' : hasThreshold ? 'threshold' : 'trend';
+    const avgValue = problems.reduce((sum, problem) => sum + problem.currentValue, 0) / problems.length;
+    const changes = problems
+      .map((problem) => problem.changePercent)
+      .filter((value): value is number => value !== undefined);
+
+    nextSummaries.push({
+      index,
+      type,
+      cellCount: problems.length,
+      avgValue,
+      avgDecline: changes.length
+        ? changes.reduce((sum, value) => sum + value, 0) / changes.length
+        : analysis?.change,
+      avgDeclineUnit: analysis?.changeUnit,
+      confidence: analysis?.confidence || INDEX_CONFIDENCE[index],
+      color: INDEX_COLORS[index],
+      label: INDEX_LABELS[index],
+    });
+  }
+
+  problemSummaries.splice(0, problemSummaries.length, ...nextSummaries);
 }
 
 /**
@@ -830,19 +1056,22 @@ function assignProblemsToCells(
  */
 function generateProblemMessage(
   index: DiagnosticIndex,
-  analysis: { threshold: boolean; trend: boolean; value: number; change: number },
+  analysis: IndexAnalysis,
   cellValue: number
 ): string {
   const label = INDEX_LABELS[index];
   const thresholds = getSeasonalThresholds()[index];
   const messages: string[] = [];
 
-  if (analysis.threshold) {
-    messages.push(`${label} critically low at ${cellValue.toFixed(1)} (below ${thresholds.low})`);
+  if (cellValue < thresholds.low) {
+    const formattedValue = NPK_INDICES.has(index) ? cellValue.toFixed(0) : cellValue.toFixed(1);
+    const unit = NPK_INDICES.has(index) ? 'satellite sufficiency score' : 'value';
+    messages.push(`${label} ${unit} is low at ${formattedValue} (below ${thresholds.low})`);
   }
 
   if (analysis.trend) {
-    messages.push(`${label} steep decline of ${Math.abs(analysis.change).toFixed(1)}%`);
+    const suffix = analysis.changeUnit === 'points' ? ' points' : '%';
+    messages.push(`${label} steep decline of ${Math.abs(analysis.change).toFixed(1)}${suffix}`);
   }
 
   return messages.join('; ');
@@ -894,8 +1123,9 @@ export function getMultipleProblemColor(): string {
  * Determine if a problem should be classified as urgent.
  * Urgent when: type is 'both', or steep trend decline (>50%), or critical NPK/crop health drop.
  */
-function classifyUrgent(problem: Pick<CellProblem, 'type' | 'index' | 'changePercent'>): boolean {
+function classifyUrgent(problem: Pick<CellProblem, 'type' | 'index' | 'changePercent' | 'severityScore'>): boolean {
   if (problem.type === 'both') return true;
+  if ((problem.severityScore ?? 0) >= 0.78) return true;
   if (problem.type === 'trend' && problem.changePercent !== undefined && problem.changePercent < -50) return true;
   return false;
 }
@@ -905,6 +1135,10 @@ function classifyUrgent(problem: Pick<CellProblem, 'type' | 'index' | 'changePer
  */
 export function isUrgentCell(cell: GridCell): boolean {
   return cell.problems.some(p => p.urgent);
+}
+
+export function getCellSeverityScore(cell: GridCell): number {
+  return cell.problems.reduce((max, problem) => Math.max(max, problem.severityScore ?? 0.35), 0);
 }
 
 /**

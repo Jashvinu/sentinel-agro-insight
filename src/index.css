@@ -159,4 +159,8 @@ All colors MUST be HSL.
     scrollbar-width: none;
     /* Firefox */
   }
+
+  .safe-area-bottom {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
 }

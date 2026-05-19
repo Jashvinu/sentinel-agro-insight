@@ -1,0 +1,26 @@
+- generic [active]:
+  - generic:
+    - region "Notifications (F8)":
+      - list
+    - region "Notifications alt+T"
+    - generic [ref=e1]:
+      - generic [ref=e3]:
+        - region "Map" [ref=e4]
+        - iframe [ref=e93]:
+          
+      - banner [ref=e94]:
+        - generic [ref=e95]:
+          - generic [ref=e96]: Step 1 of 2
+          - generic [ref=e97]: Design your plot
+        - button "My location" [ref=e98] [cursor=pointer]:
+          - img [ref=e99]
+        - button "Toggle map type" [ref=e101] [cursor=pointer]:
+          - img [ref=e102]
+      - generic [ref=e107]: Reading location…
+      - button "Draw plot" [ref=e109] [cursor=pointer]:
+        - img [ref=e110]
+        - generic [ref=e113]: Draw plot
+  - generic:
+    - generic:
+      - region "Notifications (F8)":
+        - list

@@ -229,7 +229,24 @@ function evaluate(obj: any): Promise<any> {
 // ============================================================================
 
 // Diagnostic indices to analyze
-const DIAGNOSTIC_INDICES = ['nitrogen', 'moisture', 'ndvi', 'phosphorus'];
+const DIAGNOSTIC_INDICES = ['nitrogen', 'phosphorus', 'potassium', 'moisture', 'ndvi'];
+
+type DiagnosticConfidence = 'high' | 'medium' | 'low';
+
+const INDEX_CONFIDENCE: Record<string, DiagnosticConfidence> = {
+  nitrogen: 'high',
+  phosphorus: 'low',
+  potassium: 'medium',
+  moisture: 'medium',
+  ndvi: 'high',
+};
+
+const NUTRIENT_MODEL_VERSION = 'npk-sufficiency-v2';
+const NUTRIENT_MODEL_REFERENCES = [
+  'Dianati et al. 2025, Scientific Reports, doi:10.1038/s41598-025-25034-z',
+  'Li et al. 2023, Science of The Total Environment, doi:10.1016/j.scitotenv.2023.161421',
+  'Zhang et al. 2025, Plant Methods, doi:10.1186/s13007-025-01389-2',
+];
 
 // Season-aware thresholds for problem detection
 // Adjusted for crop phenology: dormant winter fields should not trigger alerts
@@ -245,28 +262,32 @@ function getCurrentSeason(): Season {
 
 const SEASONAL_THRESHOLDS: Record<Season, Record<string, { low: number; warning: number }>> = {
   winter: {
-    nitrogen: { low: 15, warning: 30 },
+    nitrogen: { low: 35, warning: 50 },
+    phosphorus: { low: 30, warning: 45 },
+    potassium: { low: 35, warning: 50 },
     moisture: { low: 2, warning: 5 },
     ndvi: { low: 0.02, warning: 0.05 },      // MSAVI2 - bare soil/dormant
-    phosphorus: { low: 4, warning: 10 },
   },
   spring: {
-    nitrogen: { low: 40, warning: 65 },
+    nitrogen: { low: 45, warning: 60 },
+    phosphorus: { low: 35, warning: 50 },
+    potassium: { low: 40, warning: 58 },
     moisture: { low: 6, warning: 10 },
     ndvi: { low: 0.08, warning: 0.15 },      // MSAVI2 - early growth
-    phosphorus: { low: 10, warning: 20 },
   },
   summer: {
-    nitrogen: { low: 60, warning: 90 },
+    nitrogen: { low: 50, warning: 65 },
+    phosphorus: { low: 35, warning: 52 },
+    potassium: { low: 45, warning: 62 },
     moisture: { low: 8, warning: 14 },
     ndvi: { low: 0.12, warning: 0.20 },      // MSAVI2 - peak canopy
-    phosphorus: { low: 15, warning: 28 },
   },
   fall: {
-    nitrogen: { low: 30, warning: 50 },
+    nitrogen: { low: 40, warning: 55 },
+    phosphorus: { low: 32, warning: 48 },
+    potassium: { low: 38, warning: 55 },
     moisture: { low: 5, warning: 9 },
     ndvi: { low: 0.06, warning: 0.12 },      // MSAVI2 - senescence
-    phosphorus: { low: 8, warning: 16 },
   },
 };
 
@@ -276,6 +297,45 @@ function getSeasonalThresholds(): Record<string, { low: number; warning: number 
 
 // Trend detection threshold
 const TREND_THRESHOLD_PERCENT = -30; // 30% decline triggers alert
+const NUTRIENT_TREND_THRESHOLD_POINTS = -15; // 15 point drop on 0-100 sufficiency score
+const NUTRIENT_INDICES = new Set(['nitrogen', 'phosphorus', 'potassium']);
+
+function scoreFromRange(image: any, min: number, max: number): any {
+  return image.subtract(min).divide(max - min).multiply(100).clamp(0, 100);
+}
+
+function weightedScore(
+  components: Array<{ image: any; weight: number }>,
+  bandName: string
+): any {
+  let score = ee.Image(0);
+  for (const component of components) {
+    score = score.add(component.image.multiply(component.weight));
+  }
+  return score.clamp(0, 100).rename(bandName);
+}
+
+function calculateSpectralFeatures(image: any): Record<string, any> {
+  const blue = image.select('B2');
+  const green = image.select('B3');
+  const red = image.select('B4');
+  const nir = image.select('B8');
+  const swir1 = image.select('B11');
+  const swir2 = image.select('B12');
+
+  const ndvi = nir.subtract(red).divide(nir.add(red)).rename('NDVI');
+  const gndvi = nir.subtract(green).divide(nir.add(green)).rename('GNDVI');
+  const ndmi = nir.subtract(swir1).divide(nir.add(swir1)).rename('NDMI');
+  const swirBalance = swir1.subtract(swir2).divide(swir1.add(swir2)).rename('SWIR_Balance');
+  const bsi = swir1.add(red).subtract(nir.add(blue)).divide(swir1.add(red).add(nir).add(blue)).rename('BSI');
+  const savi = nir.subtract(red).multiply(1.5).divide(nir.add(red).add(0.5)).rename('SAVI');
+  const evi = image.expression(
+    '2.5 * ((NIR - RED) / (NIR + 6 * RED - 7.5 * BLUE + 1))',
+    { NIR: nir, RED: red, BLUE: blue }
+  ).rename('EVI');
+
+  return { ndvi, gndvi, ndmi, swirBalance, bsi, savi, evi };
+}
 
 // Index calculation functions
 const INDEX_CALCULATORS: Record<string, (image: any) => any> = {
@@ -291,11 +351,15 @@ const INDEX_CALCULATORS: Record<string, (image: any) => any> = {
     ).rename('ndvi');
   },
   nitrogen: (image: any) => {
-    const nir = image.select('B8');
-    const red = image.select('B4');
-    const ndvi = nir.subtract(red).divide(nir.add(red));
-    // N = 259.4 × NDVI - 58.6
-    return ndvi.multiply(259.4).subtract(58.6).rename('nitrogen');
+    const f = calculateSpectralFeatures(image);
+    // Satellite nutrient sufficiency score (0-100), not lab kg/ha.
+    // Weighted toward green/red/NIR chlorophyll proxies with moisture as stress context.
+    return weightedScore([
+      { image: scoreFromRange(f.gndvi, -0.05, 0.72), weight: 0.34 },
+      { image: scoreFromRange(f.ndvi, -0.05, 0.85), weight: 0.24 },
+      { image: scoreFromRange(f.evi, -0.05, 0.65), weight: 0.22 },
+      { image: scoreFromRange(f.ndmi, -0.35, 0.45), weight: 0.20 },
+    ], 'nitrogen');
   },
   moisture: (image: any) => {
     const nir = image.select('B8');
@@ -305,16 +369,26 @@ const INDEX_CALCULATORS: Record<string, (image: any) => any> = {
     return ndmi.multiply(45.2).subtract(8.7).rename('moisture');
   },
   phosphorus: (image: any) => {
-    const nir = image.select('B8');
-    const red = image.select('B4');
-    const blue = image.select('B2');
-    // EVI calculation
-    const evi = image.expression(
-      '2.5 * ((NIR - RED) / (NIR + 6 * RED - 7.5 * BLUE + 1))',
-      { NIR: nir, RED: red, BLUE: blue }
-    );
-    // P₂O₅ = 180 × EVI - 25
-    return evi.multiply(180).subtract(25).rename('phosphorus');
+    const f = calculateSpectralFeatures(image);
+    // Phosphorus has weaker direct spectral expression, so this is conservative
+    // and uses vegetation vigor plus soil/SWIR context instead of a hard lab unit.
+    return weightedScore([
+      { image: scoreFromRange(f.evi, -0.05, 0.65), weight: 0.34 },
+      { image: scoreFromRange(f.savi, -0.05, 0.62), weight: 0.24 },
+      { image: scoreFromRange(f.bsi.multiply(-1), -0.45, 0.35), weight: 0.22 },
+      { image: scoreFromRange(f.ndmi, -0.35, 0.45), weight: 0.20 },
+    ], 'phosphorus');
+  },
+  potassium: (image: any) => {
+    const f = calculateSpectralFeatures(image);
+    // Potassium is linked to water regulation and showed useful SWIR signal in
+    // recent Sentinel-2 macronutrient studies; keep it as a medium-confidence score.
+    return weightedScore([
+      { image: scoreFromRange(f.savi, -0.05, 0.62), weight: 0.30 },
+      { image: scoreFromRange(f.ndmi, -0.35, 0.45), weight: 0.28 },
+      { image: scoreFromRange(f.swirBalance, -0.25, 0.35), weight: 0.24 },
+      { image: scoreFromRange(f.gndvi, -0.05, 0.72), weight: 0.18 },
+    ], 'potassium');
   },
 };
 
@@ -324,14 +398,16 @@ const INDEX_PALETTES: Record<string, string[]> = {
   nitrogen: ['#ef4444', '#f97316', '#eab308', '#22c55e', '#15803d'],
   moisture: ['#92400e', '#eab308', '#93c5fd', '#3b82f6', '#1e40af'],
   phosphorus: ['#ef4444', '#f97316', '#eab308', '#22c55e', '#15803d'],
+  potassium: ['#ef4444', '#f97316', '#eab308', '#22c55e', '#15803d'],
 };
 
 // Value ranges for visualization
 const INDEX_RANGES: Record<string, { min: number; max: number }> = {
   ndvi: { min: 0, max: 0.7 },  // MSAVI2 range
-  nitrogen: { min: 0, max: 300 },
+  nitrogen: { min: 0, max: 100 },
   moisture: { min: 0, max: 50 },
   phosphorus: { min: 0, max: 100 },
+  potassium: { min: 0, max: 100 },
 };
 
 interface PrecomputedImages {
@@ -646,14 +722,18 @@ async function processIndex(
 
   let trend = 0;
   let trendDetected = false;
+  const trendUnit = NUTRIENT_INDICES.has(index) ? 'points' : 'percent';
 
   if (firstStatsResult && lastStatsResult) {
     const firstMean = firstStatsResult[index] || firstStatsResult['mean'] || 0;
     const lastMean = lastStatsResult[index] || lastStatsResult['mean'] || 0;
 
-    if (firstMean !== 0) {
+    if (trendUnit === 'points') {
+      trend = lastMean - firstMean;
+      trendDetected = trend < NUTRIENT_TREND_THRESHOLD_POINTS && lastMean < threshold.warning;
+    } else if (firstMean !== 0) {
       trend = ((lastMean - firstMean) / firstMean) * 100;
-      trendDetected = trend < TREND_THRESHOLD_PERCENT;
+      trendDetected = trend < TREND_THRESHOLD_PERCENT && lastMean < threshold.warning;
     }
   }
 
@@ -667,7 +747,15 @@ async function processIndex(
     stdDev,
     belowThreshold,
     trend,
+    trendUnit,
     trendDetected,
+    confidence: INDEX_CONFIDENCE[index] || 'medium',
+    modelVersion: ['nitrogen', 'phosphorus', 'potassium'].includes(index)
+      ? NUTRIENT_MODEL_VERSION
+      : 'diagnostic-threshold-v1',
+    unit: ['nitrogen', 'phosphorus', 'potassium'].includes(index)
+      ? 'satellite sufficiency score (0-100)'
+      : undefined,
     mapData: mapResult,
   };
 
@@ -678,7 +766,9 @@ async function processIndex(
       type: belowThreshold && trendDetected ? 'both' : (belowThreshold ? 'threshold' : 'trend'),
       avgValue: mean,
       avgDecline: trendDetected ? trend : null,
-      threshold: threshold.warning,
+      trendUnit,
+      threshold: threshold.low,
+      confidence: INDEX_CONFIDENCE[index] || 'medium',
     };
   }
 
@@ -702,6 +792,7 @@ Deno.serve(async (req) => {
     const farmId = url.searchParams.get('farm_id') || null;
     const indicesParam = url.searchParams.get('indices') || DIAGNOSTIC_INDICES.join(',');
     const numDays = parseInt(url.searchParams.get('days') || '14');
+    const maxCloudCover = parseInt(url.searchParams.get('cloud') || '50');
 
     if (!polygonParam) {
       return errorResponse('polygon parameter is required', 400);
@@ -718,19 +809,30 @@ Deno.serve(async (req) => {
     if (farmId) {
       const cached = await checkDiagnosticsCache(farmId);
       if (cached) {
-        console.log('[Diagnostics] Cache hit for farm:', farmId);
         const summary = cached.analysis_summary || {};
-        return successResponse({
-          cached: true,
-          analysis: summary.analysis || {},
-          problems: summary.problems || [],
-          cellData: cached.cell_stats || [],
-          cell_stats: cached.cell_stats || [],
-          raster_urls: cached.raster_urls || {},
-          bounds: cached.bounds || [[0, 0], [0, 0]],
-          expires_at: cached.expires_at,
-          metadata: summary.metadata || {},
-        });
+        const cachedMetadata = summary.metadata || {};
+        const cachedIndices = cached.indices || [];
+        const cacheHasCurrentModel =
+          cachedMetadata.nutrientModel?.version === NUTRIENT_MODEL_VERSION &&
+          cachedIndices.includes('potassium') &&
+          cachedMetadata.maxCloudCover === maxCloudCover;
+
+        if (cacheHasCurrentModel) {
+          console.log('[Diagnostics] Cache hit for farm:', farmId);
+          return successResponse({
+            cached: true,
+            analysis: summary.analysis || {},
+            problems: summary.problems || [],
+            cellData: cached.cell_stats || [],
+            cell_stats: cached.cell_stats || [],
+            raster_urls: cached.raster_urls || {},
+            bounds: cached.bounds || [[0, 0], [0, 0]],
+            expires_at: cached.expires_at,
+            metadata: cachedMetadata,
+          });
+        }
+
+        console.log('[Diagnostics] Cache stale for farm:', farmId, '— nutrient model changed');
       }
       console.log('[Diagnostics] Cache miss for farm:', farmId, '— running GEE analysis');
     }
@@ -782,16 +884,33 @@ Deno.serve(async (req) => {
     console.log(`[Diagnostics] Date range: ${startDate} to ${endDate} (${numDays} days)`);
 
     const collectionStart = Date.now();
-    const collection = getMergedOpticalCollection(eeGeometry, startDate, endDate);
+    const collection = getMergedOpticalCollection(eeGeometry, startDate, endDate, maxCloudCover);
+    const imageCount = await evaluate(collection.size());
+    if (!imageCount || imageCount <= 0) {
+      throw new Error(`No usable optical images found below ${maxCloudCover}% cloud cover for ${startDate} to ${endDate}`);
+    }
 
     const sortedCollection = collection.sort('system:time_start', false);
     console.log(`[Diagnostics] Collection setup: ${Date.now() - collectionStart}ms`);
 
     const precomputeStart = Date.now();
+    const midpointDate = new Date(
+      (new Date(startDate).getTime() + new Date(endDate).getTime()) / 2
+    ).toISOString().split('T')[0];
+    const firstWindow = collection.filterDate(startDate, midpointDate);
+    const lastWindow = collection.filterDate(midpointDate, endDate);
+    const [firstWindowCount, lastWindowCount] = await Promise.all([
+      evaluate(firstWindow.size()),
+      evaluate(lastWindow.size()),
+    ]);
     const precomputed: PrecomputedImages = {
       composite: sortedCollection.median(),
-      firstImage: sortedCollection.sort('system:time_start', true).first(),
-      lastImage: sortedCollection.sort('system:time_start', false).first(),
+      firstImage: firstWindowCount > 0
+        ? firstWindow.median()
+        : sortedCollection.sort('system:time_start', true).first(),
+      lastImage: lastWindowCount > 0
+        ? lastWindow.median()
+        : sortedCollection.sort('system:time_start', false).first(),
     };
     console.log(`[Diagnostics] Pre-computed shared images: ${Date.now() - precomputeStart}ms`);
 
@@ -818,7 +937,15 @@ Deno.serve(async (req) => {
     }
 
     // --- Pixel sampling for data-driven spot placement ---
-    let cellData: Array<{ lat: number; lng: number; nitrogen: number | null; moisture: number | null; ndvi: number | null; phosphorus: number | null }> = [];
+    let cellData: Array<{
+      lat: number;
+      lng: number;
+      nitrogen: number | null;
+      phosphorus: number | null;
+      potassium: number | null;
+      moisture: number | null;
+      ndvi: number | null;
+    }> = [];
     try {
       const samplingStart = Date.now();
       console.log('[Diagnostics] Starting pixel sampling...');
@@ -849,9 +976,10 @@ Deno.serve(async (req) => {
           lng: coords[0],
           lat: coords[1],
           nitrogen: props.nitrogen ?? null,
+          phosphorus: props.phosphorus ?? null,
+          potassium: props.potassium ?? null,
           moisture: props.moisture ?? null,
           ndvi: props.ndvi ?? null,
-          phosphorus: props.phosphorus ?? null,
         };
       });
 
@@ -903,11 +1031,23 @@ Deno.serve(async (req) => {
 
     const metadata = {
       daysAnalyzed: numDays,
+      imagesAnalyzed: imageCount,
       dateRange: { start: startDate, end: endDate },
+      maxCloudCover,
+      cloudCover: await evaluate(collection.aggregate_mean('cloud_cover')).catch(() => null),
       resolution: '10m',
       indices,
       season,
       processingTimeMs: totalTime,
+      trendMethod: firstWindowCount > 0 && lastWindowCount > 0
+        ? 'first-half median vs second-half median'
+        : 'first available image vs last available image',
+      nutrientModel: {
+        version: NUTRIENT_MODEL_VERSION,
+        unit: 'satellite nutrient sufficiency score (0-100)',
+        confidenceByIndex: INDEX_CONFIDENCE,
+        references: NUTRIENT_MODEL_REFERENCES,
+      },
     };
 
     // Persist to cache (non-blocking — don't await to avoid delaying response)

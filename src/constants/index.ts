@@ -110,20 +110,20 @@ export const AGRICULTURAL_INDICES = {
         name: 'Nitrogen (N)',
         category: 'NPK',
         unit: 'kg N/ha',
-        description: 'Soil nitrogen content for crop nutrition',
+        description: 'Satellite-derived nitrogen proxy; calibrate with soil tests before treating as absolute kg/ha',
         formulas: {
             primary: 'NDVI = (B8 - B4) / (B8 + B4)',
-            conversion: 'N = 259.4 × NDVI - 58.6 (R²=0.90)',
-            alternative: 'N = 300 × (NDVI - 0.3) / 0.55',
-            lateSeason: 'NDRE = (B6 - B5) / (B6 + B5)',
-            lateSeasonConversion: 'N = 45.2 × NDRE + 125.8 (R²=0.91)'
+            conversion: 'Legacy calibrated conversion: N = 259.4 × NDVI - 58.6',
+            alternative: 'Diagnostics v2 uses weighted GNDVI + NDVI + EVI + NDMI sufficiency score',
+            lateSeason: 'NDRE red-edge signal is preferred when Sentinel-2 red-edge data is available',
+            lateSeasonConversion: 'Use field calibration for absolute N rates'
         },
         ranges: {
             low: { min: 0, max: 100, color: '#ef4444', status: 'Deficient' },
             medium: { min: 100, max: 200, color: '#f59e0b', status: 'Adequate' },
             high: { min: 200, max: 300, color: '#10b981', status: 'Optimal' }
         },
-        accuracy: 'R² = 0.85-0.95',
+        accuracy: 'High proxy confidence for relative zones; absolute rates require calibration',
         requiresCalibration: true
     },
     phosphorus: {
@@ -131,18 +131,18 @@ export const AGRICULTURAL_INDICES = {
         name: 'Phosphorus (P₂O₅)',
         category: 'NPK',
         unit: 'kg P₂O₅/ha',
-        description: 'Soil phosphorus content for root development',
+        description: 'Low-confidence satellite phosphorus proxy; phosphorus often needs soil-test confirmation',
         formulas: {
             primary: 'EVI = 2.5 × (B8 - B4) / (B8 + 6×B4 - 7.5×B2 + 1)',
-            conversion: 'P₂O₅ = 180 × EVI - 25',
-            alternative: 'P₂O₅ = 220 × NDRE + 35'
+            conversion: 'Legacy conversion: P₂O₅ = 180 × EVI - 25',
+            alternative: 'Diagnostics v2 uses EVI + SAVI + bare-soil/SWIR + NDMI sufficiency score'
         },
         ranges: {
             low: { min: 0, max: 50, color: '#ef4444', status: 'Deficient' },
             medium: { min: 50, max: 100, color: '#f59e0b', status: 'Adequate' },
             high: { min: 100, max: 200, color: '#10b981', status: 'Optimal' }
         },
-        accuracy: 'R² = 0.70-0.85',
+        accuracy: 'Low satellite-only confidence; confirm before fertilizer decisions',
         requiresCalibration: true
     },
     potassium: {
@@ -150,18 +150,18 @@ export const AGRICULTURAL_INDICES = {
         name: 'Potassium (K₂O)',
         category: 'NPK',
         unit: 'kg K₂O/ha',
-        description: 'Soil potassium content for disease resistance',
+        description: 'Medium-confidence satellite potassium proxy tied to canopy structure and SWIR moisture response',
         formulas: {
             primary: 'SAVI = ((B8 - B4) / (B8 + B4 + 0.5)) × 1.5',
-            conversion: 'K₂O = 250 × SAVI - 40',
-            alternative: 'K₂O = 180 × NDMI + 60'
+            conversion: 'Legacy conversion: K₂O = 250 × SAVI - 40',
+            alternative: 'Diagnostics v2 uses SAVI + NDMI + SWIR balance + GNDVI sufficiency score'
         },
         ranges: {
             low: { min: 0, max: 100, color: '#ef4444', status: 'Deficient' },
             medium: { min: 100, max: 200, color: '#f59e0b', status: 'Adequate' },
             high: { min: 200, max: 300, color: '#10b981', status: 'Optimal' }
         },
-        accuracy: 'R² = 0.70-0.85',
+        accuracy: 'Medium proxy confidence for relative zones; absolute rates require calibration',
         requiresCalibration: true
     },
 
@@ -411,19 +411,9 @@ export const ALERT_SEVERITY = {
 // Navigation Items
 export const NAVIGATION_ITEMS = [
     {
-        id: 'dashboard',
-        label: 'Dashboard',
-        href: '/dashboard',
-    },
-    {
-        id: 'yield-prediction',
-        label: 'Yield Prediction',
-        href: '/yield-prediction',
-    },
-    {
-        id: 'advanced-monitoring',
-        label: 'Advanced Monitoring',
-        href: '/advanced-monitoring',
+        id: 'plot-designer',
+        label: 'Plot Designer',
+        href: '/',
     },
     {
         id: 'field-diagnostics',

@@ -10,25 +10,17 @@ import {
   Sun,
   CloudRain,
   Wind,
-  Thermometer,
   Droplets,
   Loader2,
+  AlertTriangle,
 } from 'lucide-react';
-
-interface WeatherData {
-  hourly: {
-    time: Date[];
-    temperature_2m: Float32Array;
-    precipitation: Float32Array;
-    wind_speed_10m: Float32Array;
-    cloud_cover: Float32Array;
-    weather_code: Float32Array;
-  };
-}
+import { DiagnosticResult } from '@/services/diagnosticService';
+import type { WeatherData } from '@/hooks/useWeather';
 
 interface DiagnosticsWeatherCardProps {
   data: WeatherData | null;
   loading: boolean;
+  result?: DiagnosticResult | null;
 }
 
 const getWeatherIcon = (weatherCode: number) => {
@@ -52,6 +44,7 @@ const getCondition = (weatherCode: number) => {
 export const DiagnosticsWeatherCard: React.FC<DiagnosticsWeatherCardProps> = ({
   data,
   loading,
+  result,
 }) => {
   if (loading) {
     return (
@@ -69,7 +62,7 @@ export const DiagnosticsWeatherCard: React.FC<DiagnosticsWeatherCardProps> = ({
   if (!data || data.hourly.time.length === 0) return null;
 
   const currentTemp = Math.round(data.hourly.temperature_2m[0]);
-  const currentWind = Math.round(data.hourly.wind_speed_10m[0] * 3.6);
+  const currentWind = Math.round(data.hourly.wind_speed_10m[0]);
   const currentCloud = Math.round(data.hourly.cloud_cover[0]);
   const currentCode = data.hourly.weather_code[0];
   const CurrentIcon = getWeatherIcon(currentCode);
@@ -101,6 +94,36 @@ export const DiagnosticsWeatherCard: React.FC<DiagnosticsWeatherCardProps> = ({
   }
 
   const totalPrecip = forecast.reduce((sum, d) => sum + d.precip, 0);
+
+  // Generate Weather Correlation Insights
+  const correlations: string[] = [];
+  if (result && result.problems.length > 0) {
+    const moistureProblem = result.problems.find(p => p.index === 'moisture');
+    const ndviProblem = result.problems.find(p => p.index === 'ndvi');
+    
+    // Check if it's hot (max temp > 32C)
+    const isHot = forecast.some(d => d.high > 32);
+    // Check if it's dry (precip < 2mm)
+    const isDry = totalPrecip < 2;
+    // Check if it's wet
+    const isWet = totalPrecip > 15;
+
+    if (moistureProblem && isDry) {
+      correlations.push("Low soil moisture is being exacerbated by current dry weather conditions.");
+    }
+    
+    if (ndviProblem && isHot && isDry) {
+      correlations.push("Crop stress (NDVI) is likely driven by the current heatwave and lack of rain.");
+    }
+    
+    if (result.problems.find(p => p.index === 'nitrogen') && isWet) {
+      correlations.push("Heavy rainfall may cause nitrogen leaching. Monitor nutrient levels carefully.");
+    }
+
+    if (result.problems.find(p => p.index === 'potassium') && isDry) {
+      correlations.push("Potassium stress can amplify drought sensitivity because K supports crop water regulation.");
+    }
+  }
 
   return (
     <Card>
@@ -147,6 +170,21 @@ export const DiagnosticsWeatherCard: React.FC<DiagnosticsWeatherCardProps> = ({
           <Droplets className="w-3 h-3 text-blue-500" />
           <span>3-day precipitation: <span className="font-medium text-foreground">{totalPrecip.toFixed(1)}mm</span></span>
         </div>
+
+        {/* Weather Correlations */}
+        {correlations.length > 0 && (
+          <div className="pt-3 border-t space-y-2 mt-1">
+            <div className="text-[11px] uppercase tracking-wider font-semibold text-amber-600 flex items-center gap-1.5">
+              <AlertTriangle className="w-3 h-3" />
+              Weather Impacts
+            </div>
+            {correlations.map((msg, i) => (
+              <p key={i} className="text-xs text-muted-foreground leading-relaxed bg-amber-50 p-2 rounded border border-amber-100/50">
+                {msg}
+              </p>
+            ))}
+          </div>
+        )}
       </CardContent>
     </Card>
   );

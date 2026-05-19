@@ -6,6 +6,7 @@
 import React from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { DiagnosticResult, isUrgentCell } from '@/services/diagnosticService';
+import { Sparkline } from '@/components/ui/sparkline';
 import {
   Activity,
   CheckCircle2,
@@ -155,24 +156,37 @@ export const ProblemSummary: React.FC<ProblemSummaryProps> = ({
             <div className="text-xs font-medium text-muted-foreground mb-2">
               Detected Issues ({problems.length})
             </div>
-            <div className="flex flex-wrap gap-1">
-              {problems.map((p) => (
-                <span
-                  key={p.index}
-                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs"
-                  style={{
-                    backgroundColor: `${p.color}20`,
-                    color: p.color,
-                    border: `1px solid ${p.color}40`,
-                  }}
-                >
-                  <span
-                    className="w-2 h-2 rounded-full"
-                    style={{ backgroundColor: p.color }}
-                  />
-                  {p.label}
-                </span>
-              ))}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-1">
+              {problems.map((p) => {
+                const historyData = result.history?.[p.index];
+                // Sort by date ascending
+                const sortedHistory = historyData ? [...historyData].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()) : [];
+                const trendPoints = sortedHistory.map(d => d.mean);
+                
+                return (
+                  <div key={p.index} className="flex items-center justify-between p-2 rounded-lg border bg-muted/20 hover:bg-muted/40 transition-colors">
+                    <div className="flex flex-col h-full justify-between">
+                      <div className="flex items-center gap-1.5 font-medium text-[11px] uppercase tracking-wider text-muted-foreground">
+                        <span className="w-2 h-2 rounded-full" style={{ backgroundColor: p.color }} />
+                        {p.label}
+                      </div>
+                      {p.confidence && (
+                        <div className="text-[10px] uppercase tracking-wide text-muted-foreground/80 mt-0.5">
+                          {p.confidence} confidence
+                        </div>
+                      )}
+                      <div className="text-lg font-bold mt-1" style={{ color: p.color }}>
+                        {p.avgValue?.toFixed(1) || '--'}
+                      </div>
+                    </div>
+                    {trendPoints.length > 1 && (
+                      <div className="w-16 h-8 opacity-80" title="14-day history">
+                        <Sparkline data={trendPoints} color={p.color} strokeWidth={2.5} />
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </div>
         )}

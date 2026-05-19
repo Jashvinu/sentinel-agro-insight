@@ -6,10 +6,13 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { MapContainer, TileLayer, Rectangle, GeoJSON, ImageOverlay, useMap } from 'react-leaflet';
 import L from 'leaflet';
+import type { Geometry } from 'geojson';
 import {
   GridCell,
   getCellColor,
   getCellOpacity,
+  getCellSeverityScore,
+  getIndexColor,
   isUrgentCell,
 } from '@/services/diagnosticService';
 import 'leaflet/dist/leaflet.css';
@@ -17,7 +20,7 @@ import { Map, Satellite } from 'lucide-react';
 
 interface DiagnosticMapProps {
   cells: GridCell[];
-  farmGeometry: any;
+  farmGeometry: Geometry | null;
   onCellClick?: (cell: GridCell) => void;
   selectedCellId?: string | null;
   rasterUrls?: Record<string, string>;
@@ -27,7 +30,7 @@ interface DiagnosticMapProps {
 }
 
 // Component to fit map bounds to farm
-function FitBounds({ geometry }: { geometry: any }) {
+function FitBounds({ geometry }: { geometry: Geometry | null }) {
   const map = useMap();
 
   useEffect(() => {
@@ -47,12 +50,13 @@ function FitBounds({ geometry }: { geometry: any }) {
   return null;
 }
 
-const RASTER_INDICES = ['ndvi', 'nitrogen', 'moisture', 'phosphorus'] as const;
+const RASTER_INDICES = ['ndvi', 'nitrogen', 'phosphorus', 'potassium', 'moisture'] as const;
 const RASTER_INDEX_LABELS: Record<string, string> = {
   ndvi: 'Crop Health',
   nitrogen: 'Nitrogen',
-  moisture: 'Moisture',
   phosphorus: 'Phosphorus',
+  potassium: 'Potassium',
+  moisture: 'Moisture',
 };
 
 export const DiagnosticMap: React.FC<DiagnosticMapProps> = ({
@@ -183,22 +187,32 @@ export const DiagnosticMap: React.FC<DiagnosticMapProps> = ({
         )}
 
         {/* Layer 2: Grid cell rectangles
-            - With rasters: transparent click targets (border visible on selection only)
+            - With rasters: low-opacity diagnostic risk overlay on top of satellite index
             - Without rasters: original colored overlays (fallback) */}
         {hasRasters
           ? cells
               .filter((cell) => cell.problems.length > 0)
               .map((cell) => {
                 const isSelected = cell.id === selectedCellId;
+                const activeProblem = activeIndex
+                  ? cell.problems.find((problem) => problem.index === activeIndex)
+                  : undefined;
+                const deEmphasized = Boolean(activeIndex && !activeProblem);
+                const color = activeProblem
+                  ? getIndexColor(activeProblem.index)
+                  : getCellColor(cell) || '#f97316';
+                const severity = getCellSeverityScore(cell);
+                const urgent = isUrgentCell(cell);
                 return (
                   <Rectangle
                     key={cell.id}
                     bounds={cell.bounds as [[number, number], [number, number]]}
                     pathOptions={{
-                      fillOpacity: 0,
-                      opacity: isSelected ? 0.9 : 0,
-                      color: '#ffffff',
-                      weight: isSelected ? 2 : 0,
+                      fillOpacity: isSelected ? 0.48 : deEmphasized ? 0.08 : Math.max(0.16, severity * 0.36),
+                      opacity: isSelected ? 0.95 : deEmphasized ? 0.22 : 0.7,
+                      color: isSelected ? '#ffffff' : urgent ? '#fb7185' : color,
+                      weight: isSelected ? 3 : urgent ? 2 : 1,
+                      fillColor: color,
                     }}
                     eventHandlers={{ click: () => onCellClick?.(cell) }}
                   />

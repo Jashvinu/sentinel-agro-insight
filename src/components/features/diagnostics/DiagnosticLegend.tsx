@@ -130,6 +130,11 @@ const LegendItem: React.FC<LegendItemProps> = ({ problem, totalCells }) => {
             {getTypeIcon()}
             {getTypeLabel()}
           </Badge>
+          {problem.confidence && (
+            <Badge variant="outline" className="text-[10px] uppercase">
+              {problem.confidence}
+            </Badge>
+          )}
         </div>
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <span>{problem.cellCount} cells{totalCells ? ` (${Math.round((problem.cellCount / totalCells) * 100)}%)` : ''}</span>
@@ -138,7 +143,7 @@ const LegendItem: React.FC<LegendItemProps> = ({ problem, totalCells }) => {
           )}
           {problem.avgDecline !== undefined && problem.avgDecline !== null && (
             <span className="text-red-500">
-              • {problem.avgDecline.toFixed(1)}% change
+              • {problem.avgDecline.toFixed(1)}{problem.avgDeclineUnit === 'points' ? ' pts' : '%'} change
             </span>
           )}
         </div>
