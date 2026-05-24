@@ -11,6 +11,7 @@ import {
   getIndexLabel,
 } from '@/services/diagnosticService';
 import type { WeatherData } from '@/hooks/useWeather';
+import { buildApiUrl, getSupabaseFunctionHeaders } from '@/services/api';
 
 export interface RetrievedKnowledgeChunk {
   chunk: AgronomyKnowledgeChunk;
@@ -45,43 +46,29 @@ export interface AgronomyAdvisory {
   warning?: string;
 }
 
-interface GeminiPart {
-  text?: string;
+interface RagAdvisorCitation {
+  title: string;
+  publisher: string;
+  url: string;
 }
 
-interface GeminiCandidate {
-  content?: {
-    parts?: GeminiPart[];
+interface RagAdvisorResponse {
+  answer: string;
+  priority_actions?: string[];
+  disease_risk_triage?: Array<{
+    risk: string;
+    severity: 'low' | 'medium' | 'high';
+    why: string;
+    scout_action: string;
+  }>;
+  remote_sensing_summary?: {
+    headline: string;
+    signals: string[];
+    warnings: string[];
   };
-  finishReason?: string;
+  citations?: RagAdvisorCitation[];
+  diagnostics?: Record<string, unknown>;
 }
-
-interface GeminiResponse {
-  candidates?: GeminiCandidate[];
-  error?: {
-    message?: string;
-  };
-}
-
-const GEMINI_API_KEY = (import.meta.env.VITE_GEMINI_API_KEY as string | undefined)?.trim();
-const DEFAULT_GEMINI_MODELS = ['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-2.5-pro'];
-const DEFAULT_GEMINI_VERSIONS = ['v1beta', 'v1'];
-
-const GEMINI_MODELS = (() => {
-  const envModels = (import.meta.env.VITE_GEMINI_MODELS as string | undefined)
-    ?.split(',')
-    .map((model) => model.trim())
-    .filter(Boolean);
-  return envModels && envModels.length > 0 ? envModels : DEFAULT_GEMINI_MODELS;
-})();
-
-const GEMINI_VERSIONS = (() => {
-  const envVersions = (import.meta.env.VITE_GEMINI_API_VERSIONS as string | undefined)
-    ?.split(',')
-    .map((version) => version.trim())
-    .filter(Boolean);
-  return envVersions && envVersions.length > 0 ? envVersions : DEFAULT_GEMINI_VERSIONS;
-})();
 
 const INDEX_TAGS: Record<DiagnosticIndex, string[]> = {
   nitrogen: ['nitrogen', 'nutrient'],
@@ -90,9 +77,6 @@ const INDEX_TAGS: Record<DiagnosticIndex, string[]> = {
   moisture: ['moisture', 'water', 'drought'],
   ndvi: ['crop-stress', 'weed', 'pest'],
 };
-
-const buildGeminiEndpoint = (model: string, version: string) =>
-  `https://generativelanguage.googleapis.com/${version}/models/${model}:generateContent`;
 
 const sum = (values: number[]) => values.reduce((total, value) => total + value, 0);
 
@@ -318,75 +302,85 @@ function normalizeAdvisoryText(text: string): string {
     .trim();
 }
 
-function extractGeminiText(data: GeminiResponse): string | null {
-  if (data.candidates?.[0]?.finishReason === 'MAX_TOKENS') {
-    return null;
-  }
+function uniqueAgronomySources(sources: AgronomySource[]): AgronomySource[] {
+  const seen = new Set<string>();
 
-  const parts = data.candidates?.[0]?.content?.parts;
-  if (!parts || parts.length === 0) return null;
-
-  const text = parts
-    .map((part) => part.text)
-    .filter((partText): partText is string => Boolean(partText))
-    .join('\n')
-    .trim();
-
-  return text ? normalizeAdvisoryText(text) : null;
+  return sources.filter((source) => {
+    if (seen.has(source.url)) return false;
+    seen.add(source.url);
+    return true;
+  });
 }
 
-async function requestGeminiAdvisory(prompt: string): Promise<string> {
-  if (!GEMINI_API_KEY) {
-    throw new Error('Gemini API key is not configured.');
+function citationsToSources(citations: RagAdvisorCitation[] = []): AgronomySource[] {
+  return citations.map((citation) => ({
+    name: citation.title,
+    institution: citation.publisher,
+    url: citation.url,
+  }));
+}
+
+function formatServerAdvisory(data: RagAdvisorResponse, input: AgronomyAdvisoryInput, weatherSummary: WeatherAdvisorySummary): string {
+  const cropLabel = input.crop === 'rice' ? 'rice/paddy' : 'millets';
+  const seasonLabel = input.season === 'kharif' ? 'Kharif' : 'Rabi';
+  const priority = data.priority_actions?.filter(Boolean).join(' ');
+  const diseaseRisk = data.disease_risk_triage
+    ?.map((risk) => `${risk.risk}: ${risk.why} Scout action: ${risk.scout_action}`)
+    .join(' ');
+  const remoteSignals = data.remote_sensing_summary?.signals?.slice(0, 3).join(' ') || data.remote_sensing_summary?.headline;
+
+  return normalizeAdvisoryText([
+    `Priority: ${priority || `For ${seasonLabel} ${cropLabel}, use remote-sensing risk zones for scouting first.`}`,
+    `Next 3 days: ${weatherSummary.summary}`,
+    `Crop management: ${data.answer}`,
+    `Weather timing: ${remoteSignals || 'Use district agromet guidance before fertilizer, irrigation, or spray timing.'}`,
+    `Verify locally: ${diseaseRisk || 'Confirm symptoms, fertilizer changes, and plant-protection decisions with soil testing and the nearest KVK/agriculture officer.'}`,
+  ].join('\n'));
+}
+
+async function requestServerRagAdvisory(
+  input: AgronomyAdvisoryInput,
+  retrieved: RetrievedKnowledgeChunk[],
+  weatherSummary: WeatherAdvisorySummary
+): Promise<{ text: string; sources: AgronomySource[]; diagnostics?: Record<string, unknown> }> {
+  const question = [
+    `Create a practical Maharashtra farm advisory for ${input.farmName || 'the selected farm'}.`,
+    `Crop: ${input.crop}; season: ${input.season}.`,
+    `Satellite diagnostics: ${summarizeDiagnostics(input.result)}`,
+    `Weather: ${weatherSummary.summary}`,
+  ].join('\n');
+
+  const response = await fetch(buildApiUrl('/rag-advisor'), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...getSupabaseFunctionHeaders(),
+    },
+    body: JSON.stringify({
+      question,
+      crop: input.crop,
+      season: input.season,
+      diagnostic_result: input.result,
+      region: 'maharashtra',
+      constraints: [
+        ...weatherSummary.tags,
+        ...retrieved.flatMap((item) => item.matchedTags),
+      ].slice(0, 12),
+      top_k: 6,
+    }),
+  });
+
+  const data = (await response.json().catch(() => ({}))) as Partial<RagAdvisorResponse> & { error?: string };
+
+  if (!response.ok || !data.answer) {
+    throw new Error(data.error || `Server RAG advisor returned ${response.status}`);
   }
 
-  let lastError = 'Gemini request failed.';
-
-  for (const version of GEMINI_VERSIONS) {
-    for (const model of GEMINI_MODELS) {
-      try {
-        const response = await fetch(`${buildGeminiEndpoint(model, version)}?key=${GEMINI_API_KEY}`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            contents: [
-              {
-                role: 'user',
-                parts: [{ text: prompt }],
-              },
-            ],
-            generationConfig: {
-              temperature: 0.25,
-              maxOutputTokens: 1600,
-              thinkingConfig: {
-                thinkingBudget: 0,
-              },
-            },
-          }),
-        });
-
-        const data = (await response.json().catch(() => ({}))) as GeminiResponse;
-
-        if (!response.ok) {
-          throw new Error(data.error?.message || `Gemini returned ${response.status}`);
-        }
-
-        const text = extractGeminiText(data);
-        if (!text) {
-          throw new Error('Gemini response did not include text.');
-        }
-
-        return text;
-      } catch (error) {
-        lastError = error instanceof Error ? error.message : lastError;
-        console.warn(`Gemini advisory failed for ${model}/${version}: ${lastError}`);
-      }
-    }
-  }
-
-  throw new Error(lastError);
+  return {
+    text: formatServerAdvisory(data as RagAdvisorResponse, input, weatherSummary),
+    sources: citationsToSources(data.citations),
+    diagnostics: data.diagnostics,
+  };
 }
 
 function buildFallbackAdvisory(
@@ -417,20 +411,19 @@ export async function generateAgronomyAdvisory(input: AgronomyAdvisoryInput): Pr
   const weatherSummary = summarizeWeatherForAdvisory(input.weather);
   const retrieved = retrieveAgronomyKnowledge(input.crop, input.season, input.result, input.weather);
   const sources = uniqueSources(retrieved);
-  const prompt = buildPrompt(input, retrieved, weatherSummary);
 
   try {
-    const text = await requestGeminiAdvisory(prompt);
+    const serverAdvisory = await requestServerRagAdvisory(input, retrieved, weatherSummary);
     return {
-      text,
+      text: serverAdvisory.text,
       usedGemini: true,
       generatedAt: new Date().toISOString(),
-      sources,
+      sources: uniqueAgronomySources([...serverAdvisory.sources, ...sources]),
       retrieved,
       weatherSummary,
     };
   } catch (error) {
-    const warning = error instanceof Error ? error.message : 'Gemini advisory unavailable.';
+    const warning = error instanceof Error ? error.message : 'Server RAG advisory unavailable.';
 
     return {
       text: buildFallbackAdvisory(input, retrieved, weatherSummary),

@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Navigation } from '@/components/layout/navigation/navigation';
 import { DashboardKPIs } from '@/components/features/dashboard/DashboardKPIs';
-// Temporarily disabled - requires VITE_GEMINI_API_KEY
+// Temporarily disabled in this dashboard route; field briefs now use the server RAG advisor.
 // import { AIFieldReport } from '@/components/features/dashboard/AIFieldReport';
 import { WeatherSummary } from '@/components/features/dashboard/WeatherSummary';
 import { AlertsOverview } from '@/components/features/dashboard/AlertsOverview';
@@ -48,7 +48,7 @@ const Dashboard = () => {
         {/* KPI Dashboard */}
         <DashboardKPIs />
 
-        {/* AI Field Brief - Temporarily disabled (requires VITE_GEMINI_API_KEY) */}
+        {/* AI Field Brief - temporarily disabled on this dashboard route */}
         {/* <AIFieldReport /> */}
 
         {/* Main Dashboard Grid - Map and Weather */}

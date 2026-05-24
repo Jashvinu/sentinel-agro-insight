@@ -18,6 +18,7 @@ This project uses a **separated deployment architecture**:
 - 🗺️ **Interactive Maps**: Field visualization with MapLibre GL
 - 📈 **Analytics Dashboard**: Comprehensive data visualization
 - 🌤️ **Weather Integration**: OpenMeteo weather data
+- 🧠 **Remote-Sensing RAG Advisor**: Supabase pgvector retrieval plus server-side Gemini recommendations for Maharashtra rice and millets
 
 ## Tech Stack
 
@@ -62,6 +63,12 @@ VITE_API_BASE_URL=http://localhost:54321/functions/v1
 
 # For production, use your Supabase project URL:
 # VITE_API_BASE_URL=https://your-project-ref.supabase.co/functions/v1
+
+# Server-side RAG advisor generation
+GEMINI_API_KEY=your-gemini-api-key
+# Optional overrides:
+# GEMINI_MODELS=gemini-2.5-flash,gemini-2.5-flash-lite
+# GEMINI_API_VERSIONS=v1beta,v1
 ```
 
 ### Development
@@ -139,6 +146,11 @@ Base URL: `https://your-project-ref.supabase.co/functions/v1`
 
 ### Agricultural Indices
 - `GET /agricultural-indices` - Comprehensive agricultural indices
+
+### GrainAI Remote-Sensing RAG
+- `POST /rag-advisor` - Builds farm context, retrieves agronomy/IPM chunks, calls Gemini server-side, and returns cited recommendations
+- `POST /rag-retrieve` - Debug retrieval endpoint with ranked chunks, citations, and source coverage
+- `GET|POST /farm-context` - Normalized farm telemetry snapshot from farms, diagnostics, agricultural indices, water metrics, and monitoring caches
 
 ### Query Parameters
 - `index`: Type of index (ndvi, evi, savi, msavi) - default: msavi

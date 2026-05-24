@@ -132,11 +132,11 @@ export const GeminiAdvisoryCard: React.FC<GeminiAdvisoryCardProps> = ({
           <div className="min-w-0">
             <CardTitle className="text-sm font-semibold flex items-center gap-2">
               <Bot className="w-4 h-4 text-primary" />
-              Gemini RAG Advisor
+              Server RAG Advisor
             </CardTitle>
             <div className="mt-2 flex flex-wrap items-center gap-1.5">
               <Badge variant={advisory?.usedGemini ? 'default' : 'outline'} className="text-[10px]">
-                {advisory?.usedGemini ? 'Gemini' : 'Local fallback'}
+                {advisory?.usedGemini ? 'Server Gemini' : 'Local fallback'}
               </Badge>
               <Badge variant="outline" className="text-[10px] capitalize">
                 {crop === 'rice' ? 'Rice' : 'Millets'}
@@ -186,7 +186,7 @@ export const GeminiAdvisoryCard: React.FC<GeminiAdvisoryCardProps> = ({
         {advisory?.warning && (
           <div className="flex gap-2 rounded-lg border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800">
             <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-            <span>Using local RAG guidance because Gemini was unavailable: {advisory.warning}</span>
+            <span>Using local RAG guidance because the server advisor was unavailable: {advisory.warning}</span>
           </div>
         )}
 

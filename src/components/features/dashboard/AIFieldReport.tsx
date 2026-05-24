@@ -4,34 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Bot, Loader2, RefreshCw } from 'lucide-react';
 import { FIELD_BOUNDARIES } from '@/constants';
 import { DASHBOARD_INSIGHTS } from './DashboardKPIs';
-
-const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
-
-if (!GEMINI_API_KEY) {
-    console.error('VITE_GEMINI_API_KEY is not defined in environment variables');
-}
-
-const DEFAULT_GEMINI_MODELS = ['gemini-1.5-flash', 'gemini-1.5-pro'];
-const DEFAULT_GEMINI_VERSIONS = ['v1'];
-
-const GEMINI_MODELS = (() => {
-    const envModels = (import.meta.env?.VITE_GEMINI_MODELS as string | undefined)
-        ?.split(',')
-        .map((model) => model.trim())
-        .filter(Boolean);
-    return envModels && envModels.length > 0 ? envModels : DEFAULT_GEMINI_MODELS;
-})();
-
-const GEMINI_VERSIONS = (() => {
-    const envVersions = (import.meta.env?.VITE_GEMINI_API_VERSIONS as string | undefined)
-        ?.split(',')
-        .map((version) => version.trim())
-        .filter(Boolean);
-    return envVersions && envVersions.length > 0 ? envVersions : DEFAULT_GEMINI_VERSIONS;
-})();
-
-const buildGeminiEndpoint = (model: string, version: string) =>
-    `https://generativelanguage.googleapis.com/${version}/models/${model}:generateContent`;
+import { buildApiUrl, getSupabaseFunctionHeaders } from '@/services/api';
 
 const FALLBACK_REPORT =
     'Satellite review shows moisture slipping six percent in the northwest drip row at 12.3910°N 77.7742°E. Flush lines, verify emitter pressure, and hold irrigation schedule steady. Nutrient balance holds, though nitrogen drifted two percent week on week. Pest pressure remains low; scout borders. Monitor nightly gust alerts against sudden squalls tomorrow.';
@@ -62,20 +35,6 @@ Respond with only the paragraph and no bullet points.
 `.trim();
 };
 
-const extractText = (data: any): string | null => {
-    const candidates = data?.candidates;
-    if (!Array.isArray(candidates) || candidates.length === 0) return null;
-
-    const content = candidates[0]?.content;
-    if (!content?.parts) return null;
-
-    return content.parts
-        .map((part: any) => part?.text)
-        .filter(Boolean)
-        .join(' ')
-        .trim();
-};
-
 export const AIFieldReport: React.FC = () => {
     const [report, setReport] = useState<string>(FALLBACK_REPORT);
     const [loading, setLoading] = useState<boolean>(true);
@@ -85,116 +44,44 @@ export const AIFieldReport: React.FC = () => {
     const prompt = useMemo(() => buildPrompt(), []);
 
     const generateReport = useCallback(async () => {
-            if (!GEMINI_API_KEY) {
-            setError('Missing Gemini API key. Please configure VITE_GEMINI_API_KEY in your environment variables.');
-                setLoading(false);
-                return;
-            }
-
         setError(null);
         setLoading(true);
 
-            try {
-                let lastError: string | null = null;
-            let success = false;
+        try {
+            const response = await fetch(buildApiUrl('/rag-advisor'), {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...getSupabaseFunctionHeaders(),
+                },
+                body: JSON.stringify({
+                    question: prompt,
+                    crop: 'rice',
+                    season: 'kharif',
+                    region: 'maharashtra',
+                    geometry: FIELD_BOUNDARIES,
+                    constraints: ['dashboard', 'field-brief', 'water', 'nutrient', 'weather'],
+                    top_k: 4,
+                }),
+            });
 
-                for (const version of GEMINI_VERSIONS) {
-                if (success) break;
-                    for (const model of GEMINI_MODELS) {
-                    if (success) break;
-                        try {
-                            const response = await fetch(
-                                `${buildGeminiEndpoint(model, version)}?key=${GEMINI_API_KEY}`,
-                                {
-                                    method: 'POST',
-                                    headers: {
-                                        'Content-Type': 'application/json'
-                                    },
-                                    body: JSON.stringify({
-                                        contents: [
-                                            {
-                                                role: 'user',
-                                                parts: [{ text: prompt }]
-                                            }
-                                        ],
-                                        generationConfig: {
-                                            temperature: 0.4,
-                                            maxOutputTokens: 150
-                                        }
-                                    })
-                                }
-                            );
+            const data = await response.json().catch(() => ({}));
 
-                            if (!response.ok) {
-                                const details = await response.json().catch(() => null);
-                                const message =
-                                    details?.error?.message ??
-                                    `Gemini request failed with status ${response.status}`;
-                                throw new Error(message);
-                            }
+            if (!response.ok || !data.answer) {
+                throw new Error(data.error || `Server advisor failed with status ${response.status}`);
+            }
 
-                            const data = await response.json();
-                            const generatedText = extractText(data);
-
-                        if (generatedText) {
-                                setReport(enforceWordLimit(generatedText));
-                                setError(null);
-                            success = true;
-                            setRetryCount(0);
-                                return;
-                            }
-
-                            throw new Error('Gemini response missing text');
-                        } catch (modelError) {
-                            const message =
-                                modelError instanceof Error
-                                    ? modelError.message
-                                    : 'Unknown Gemini error';
-                            lastError = message;
-                            console.warn(
-                                `Gemini model "${model}" failed on version "${version}": ${message}`
-                            );
-                        }
-                    }
-                }
-
-            if (!success) {
-                    // Only show error if it's not an IP restriction or API key restriction issue
-                    const isRestrictionError = lastError && (
-                        lastError.includes('IP address restriction') ||
-                        lastError.includes('IP address') ||
-                        lastError.includes('restriction') ||
-                        lastError.includes('API key')
-                    );
-                    
-                    if (!isRestrictionError && lastError) {
-                        setError(`Unable to generate report: ${lastError}`);
-                    } else {
-                        // Silently use fallback for restriction errors
-                        setError(null);
-                    }
-                    setReport(enforceWordLimit(FALLBACK_REPORT));
-                }
-            } catch (err) {
-                console.error('Gemini report error:', err);
-                    const errorMessage = err instanceof Error ? err.message : 'Unknown error';
-                    
-                    // Only show error if it's not an IP restriction or API key restriction issue
-                    const isRestrictionError = errorMessage.includes('IP address restriction') ||
-                        errorMessage.includes('IP address') ||
-                        errorMessage.includes('restriction') ||
-                        errorMessage.includes('API key');
-                    
-                    if (!isRestrictionError) {
-                        setError(`Error: ${errorMessage}`);
-                    } else {
-                        // Silently use fallback for restriction errors
-                        setError(null);
-                    }
-                    setReport(enforceWordLimit(FALLBACK_REPORT));
-            } finally {
-                    setLoading(false);
-                }
+            setReport(enforceWordLimit(data.answer));
+            setError(null);
+            setRetryCount(0);
+        } catch (err) {
+            const errorMessage = err instanceof Error ? err.message : 'Unknown server advisor error';
+            console.error('Server field brief error:', err);
+            setError(`Using local fallback because the server advisor was unavailable: ${errorMessage}`);
+            setReport(enforceWordLimit(FALLBACK_REPORT));
+        } finally {
+            setLoading(false);
+        }
     }, [prompt]);
 
     useEffect(() => {
@@ -253,5 +140,4 @@ export const AIFieldReport: React.FC = () => {
         </Card>
     );
 };
-
 
