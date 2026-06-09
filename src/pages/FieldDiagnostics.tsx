@@ -12,23 +12,25 @@ import { Badge } from '@/components/ui/badge';
 import { useToast } from '@/hooks/useToast';
 import { useAbeFarm } from '@/hooks/useAbeFarm';
 import {
-  analyzeFarmWithRaster,
-  DiagnosticRasterResult,
+  analyzeFarm,
+  DiagnosticResult,
   GridCell,
 } from '@/services/diagnosticService';
+import {
+  ScoutZone,
+  DiseaseScreenResult,
+  runDiseaseScreen as runDiseaseScreenService,
+  getScoutZones,
+  diseaseDisplayName,
+} from '@/services/diseaseService';
+import { findNearestKVK, type KVKWithDistance } from '@/services/kvkService';
 import { DiagnosticMap } from '@/components/features/diagnostics/DiagnosticMap';
 import { DiagnosticLegend } from '@/components/features/diagnostics/DiagnosticLegend';
 import { ProblemDetailPanel } from '@/components/features/diagnostics/ProblemDetailPanel';
 import { ProblemSummary } from '@/components/features/diagnostics/ProblemSummary';
-import { NextStepsCard } from '@/components/features/diagnostics/NextStepsCard';
-import { DataQualityBadge } from '@/components/features/diagnostics/DataQualityBadge';
-import { GeminiAdvisoryCard } from '@/components/features/diagnostics/GeminiAdvisoryCard';
-import {
-  AdvisoryCrop,
-  AdvisorySeason,
-  CROP_OPTIONS,
-  SEASON_OPTIONS,
-} from '@/data/agronomyKnowledge';
+import ScoutZoneSidebar from '@/components/features/diagnostics/ScoutZoneSidebar';
+import ScoutZoneCapture from '@/components/features/diagnostics/ScoutZoneCapture';
+import NearestKVKCard from '@/components/features/diagnostics/NearestKVKCard';
 import {
   ArrowLeft,
   RefreshCw,
@@ -36,6 +38,7 @@ import {
   Loader2,
   MapPin,
   ChevronDown,
+  Scan,
 } from 'lucide-react';
 import { useWeather } from '@/hooks/useWeather';
 import { DiagnosticsWeatherCard } from '@/components/features/diagnostics/DiagnosticsWeatherCard';
@@ -50,14 +53,18 @@ const FieldDiagnostics: React.FC = () => {
   const { data: weatherData, loading: weatherLoading, fetchWeather } = useWeather();
 
   // Analysis state
-  const [result, setResult] = useState<DiagnosticRasterResult | null>(null);
+  const [result, setResult] = useState<DiagnosticResult | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [progress, setProgress] = useState(0);
   const [progressMessage, setProgressMessage] = useState('');
   const [selectedCell, setSelectedCell] = useState<GridCell | null>(null);
-  const [activeIndex, setActiveIndex] = useState<string>('ndvi');
-  const [selectedCrop, setSelectedCrop] = useState<AdvisoryCrop>('rice');
-  const [selectedSeason, setSelectedSeason] = useState<AdvisorySeason>('kharif');
+
+  // Disease scout state
+  const [scoutZones, setScoutZones] = useState<ScoutZone[]>([]);
+  const [selectedZone, setSelectedZone] = useState<ScoutZone | null>(null);
+  const [isScreening, setIsScreening] = useState(false);
+  const [showCapture, setShowCapture] = useState(false);
+  const [nearestKVK, setNearestKVK] = useState<KVKWithDistance | null>(null);
 
   // Run analysis when farm is loaded
   const runAnalysis = useCallback(async () => {
@@ -71,7 +78,7 @@ const FieldDiagnostics: React.FC = () => {
     setSelectedCell(null);
 
     try {
-      const analysisResult = await analyzeFarmWithRaster(
+      const analysisResult = await analyzeFarm(
         farmId,
         farm.geometry,
         (prog, msg) => {
@@ -120,6 +127,52 @@ const FieldDiagnostics: React.FC = () => {
       setResult(null); // Clear previous results to trigger new analysis
     }
   }, [farmId, farm?.geometry]);
+
+  // Load existing scout zones when farm changes
+  useEffect(() => {
+    if (!farmId) return;
+    getScoutZones(farmId).then(setScoutZones).catch(() => {});
+  }, [farmId]);
+
+  // Compute nearest KVK from farm centroid
+  useEffect(() => {
+    if (!farm?.geometry) return;
+    try {
+      let coords: number[][];
+      if (farm.geometry.type === 'Polygon') coords = farm.geometry.coordinates[0];
+      else if (farm.geometry.type === 'MultiPolygon') coords = farm.geometry.coordinates[0][0];
+      else return;
+      const lats = coords.map((c: number[]) => c[1]);
+      const lngs = coords.map((c: number[]) => c[0]);
+      const lat = (Math.min(...lats) + Math.max(...lats)) / 2;
+      const lng = (Math.min(...lngs) + Math.max(...lngs)) / 2;
+      setNearestKVK(findNearestKVK(lat, lng));
+    } catch { /* skip */ }
+  }, [farm?.geometry]);
+
+  // Run satellite disease pre-screen
+  const runDiseaseScreen = useCallback(async () => {
+    if (!farmId || !farm) return;
+    setIsScreening(true);
+    try {
+      const screenResult: DiseaseScreenResult = await runDiseaseScreenService({
+        farmId,
+        crop: 'rice',
+        season: 'kharif',
+        geometry: farm.geometry,
+      });
+      setScoutZones(screenResult.scout_zones);
+      toast({
+        title: `Disease screen complete`,
+        description: `${screenResult.scout_zones.length} scout zone(s) identified`,
+        variant: screenResult.scout_zones.length > 0 ? 'destructive' : 'default',
+      });
+    } catch (err) {
+      toast({ title: 'Disease screen failed', description: String(err), variant: 'destructive' });
+    } finally {
+      setIsScreening(false);
+    }
+  }, [farmId, farm, toast]);
 
   // Fetch weather when farm loads
   useEffect(() => {
@@ -178,101 +231,59 @@ const FieldDiagnostics: React.FC = () => {
     <div className="min-h-screen bg-background pb-24 lg:pb-0">
       <Navigation currentPage={currentPage} onNavigate={setCurrentPage} />
 
-      <main className="px-3 sm:px-6 lg:px-8 py-3 sm:py-6 space-y-3 sm:space-y-4">
+      <main className="px-4 sm:px-6 lg:px-8 py-4 sm:py-6 space-y-4">
         {/* Header */}
-        <div className="sticky top-0 z-40 -mx-3 flex flex-col gap-3 border-b bg-background/95 px-3 py-3 shadow-sm backdrop-blur sm:static sm:mx-0 sm:flex-row sm:items-center sm:justify-between sm:rounded-lg sm:border sm:bg-muted/30 sm:p-4 sm:shadow-none">
-          <div className="flex min-w-0 items-center gap-3">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 p-4 bg-muted/30 rounded-lg border">
+          <div className="flex items-center gap-3">
             <Button
               variant="outline"
               size="sm"
-              className="h-10 w-10 shrink-0 p-0 sm:h-9 sm:w-auto sm:px-3"
               onClick={() => navigate('/')}
-              aria-label="Back to plot designer"
             >
-              <ArrowLeft className="w-4 h-4 sm:mr-2" />
-              <span className="hidden sm:inline">Back</span>
+              <ArrowLeft className="w-4 h-4 mr-2" />
+              Back
             </Button>
-            <div className="min-w-0">
-              <h1 className="flex items-center gap-2 text-lg font-bold tracking-tight sm:text-2xl">
-                <Activity className="h-5 w-5 text-primary sm:h-6 sm:w-6" />
+            <div>
+              <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
+                <Activity className="w-6 h-6 text-primary" />
                 Field Diagnostics
               </h1>
               {farm && (
-                <p className="truncate text-xs text-muted-foreground sm:text-sm">
+                <p className="text-sm text-muted-foreground">
                   Analyzing: {farm.name}
                 </p>
               )}
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center">
-            {/* Farm Selector Dropdown */}
-            {farms.length > 1 && (
-              <div className="col-span-2 flex min-w-0 flex-col gap-1 sm:col-span-1 sm:flex-row sm:items-center sm:gap-2">
-                <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground sm:text-sm sm:font-normal sm:normal-case sm:tracking-normal">Farm</span>
-                <div className="relative min-w-0 flex-1 sm:flex-none">
-                  <select
-                    value={farmId || ''}
-                    onChange={(e) => {
-                      if (e.target.value) {
-                        selectFarm(e.target.value);
-                      }
-                    }}
-                    className="h-10 w-full appearance-none rounded-md border border-input bg-background px-3 py-1.5 pr-8 text-sm focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 sm:min-w-[150px]"
-                  >
-                    {farms.map((f) => (
-                      <option key={f.id} value={f.id}>
-                        {f.name}
-                      </option>
-                    ))}
-                  </select>
-                  <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                </div>
-              </div>
-            )}
-
-            <div className="flex min-w-0 flex-col gap-1 sm:flex-row sm:items-center sm:gap-2">
-              <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground sm:text-sm sm:font-normal sm:normal-case sm:tracking-normal">Crop</span>
-              <div className="relative min-w-0 flex-1 sm:flex-none">
+          {/* Farm Selector Dropdown */}
+          {farms.length > 1 && (
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-muted-foreground">Farm:</span>
+              <div className="relative">
                 <select
-                  value={selectedCrop}
-                  onChange={(e) => setSelectedCrop(e.target.value as AdvisoryCrop)}
-                  className="h-10 w-full appearance-none rounded-md border border-input bg-background px-3 py-1.5 pr-8 text-sm focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 sm:min-w-[132px]"
-                  aria-label="Select crop"
+                  value={farmId || ''}
+                  onChange={(e) => {
+                    if (e.target.value) {
+                      selectFarm(e.target.value);
+                    }
+                  }}
+                  className="appearance-none bg-background border border-input rounded-md px-3 py-1.5 pr-8 text-sm focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 min-w-[150px]"
                 >
-                  {CROP_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
+                  {farms.map((f) => (
+                    <option key={f.id} value={f.id}>
+                      {f.name}
                     </option>
                   ))}
                 </select>
-                <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 pointer-events-none text-muted-foreground" />
               </div>
             </div>
-
-            <div className="flex min-w-0 flex-col gap-1 sm:flex-row sm:items-center sm:gap-2">
-              <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground sm:text-sm sm:font-normal sm:normal-case sm:tracking-normal">Season</span>
-              <div className="relative min-w-0 flex-1 sm:flex-none">
-                <select
-                  value={selectedSeason}
-                  onChange={(e) => setSelectedSeason(e.target.value as AdvisorySeason)}
-                  className="h-10 w-full appearance-none rounded-md border border-input bg-background px-3 py-1.5 pr-8 text-sm focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 sm:min-w-[112px]"
-                  aria-label="Select season"
-                >
-                  {SEASON_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-                <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              </div>
-            </div>
-          </div>
+          )}
 
           <div className="flex items-center gap-2">
             {result && (
-              <Badge variant={result.problems.length > 0 ? 'destructive' : 'default'} className="h-9 px-3">
+              <Badge variant={result.problems.length > 0 ? 'destructive' : 'default'}>
                 {result.problems.length > 0
                   ? `${result.problems.length} Issue${result.problems.length > 1 ? 's' : ''} Found`
                   : 'Healthy'}
@@ -281,7 +292,16 @@ const FieldDiagnostics: React.FC = () => {
             <Button
               variant="outline"
               size="sm"
-              className="h-9 flex-1 sm:flex-none"
+              onClick={runDiseaseScreen}
+              disabled={isScreening || !farm?.geometry}
+              className="border-orange-300 text-orange-700 hover:bg-orange-50"
+            >
+              {isScreening ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Scan className="w-4 h-4 mr-2" />}
+              {isScreening ? 'Screening...' : 'Disease Screen'}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
               onClick={runAnalysis}
               disabled={isAnalyzing || !farm?.geometry}
             >
@@ -324,11 +344,11 @@ const FieldDiagnostics: React.FC = () => {
 
         {/* Main content */}
         {!isAnalyzing && result && (
-          <div className="grid grid-cols-1 gap-3 sm:gap-4 lg:grid-cols-4">
+          <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
             {/* Map - takes 3 columns on large screens */}
             <div className="lg:col-span-3">
-              <Card className="overflow-hidden rounded-xl sm:rounded-lg">
-                <CardHeader className="px-3 py-2 sm:px-6 sm:py-3">
+              <Card className="overflow-hidden">
+                <CardHeader className="py-3">
                   <CardTitle className="text-sm font-semibold flex items-center justify-between">
                     <span>Diagnostic Map</span>
                     <Badge variant="outline" className="font-normal">
@@ -336,55 +356,41 @@ const FieldDiagnostics: React.FC = () => {
                     </Badge>
                   </CardTitle>
                 </CardHeader>
-                <CardContent className="relative h-[56vh] min-h-[360px] max-h-[620px] p-0 sm:h-[600px]">
+                <CardContent className="p-0 relative" style={{ height: '600px' }}>
                   <DiagnosticMap
                     cells={result.cells}
                     farmGeometry={farm?.geometry}
                     onCellClick={handleCellClick}
                     selectedCellId={selectedCell?.id}
-                    rasterUrls={result.rasterUrls}
-                    rasterBounds={result.bounds}
-                    activeIndex={activeIndex}
-                    onActiveIndexChange={setActiveIndex}
+                    zones={scoutZones}
+                    onZoneSelect={(zone) => { setSelectedZone(zone); setShowCapture(true); }}
                   />
                   <ProblemDetailPanel
                     cell={selectedCell}
                     result={result}
                     onClose={handleCloseDetail}
                   />
-                  <DataQualityBadge result={result} />
                 </CardContent>
               </Card>
             </div>
 
 
             {/* Sidebar - takes 1 column on large screens */}
-            <div className="flex flex-col gap-3 sm:gap-4">
-              <div className="order-2 lg:order-1">
-                <ProblemSummary result={result} />
-              </div>
-              <div className="order-1 lg:order-2">
-                <GeminiAdvisoryCard
-                  crop={selectedCrop}
-                  season={selectedSeason}
-                  result={result}
-                  weatherData={weatherData}
-                  farmName={farm?.name}
+            <div className="space-y-4">
+              <ProblemSummary result={result} />
+              {scoutZones.length > 0 && (
+                <ScoutZoneSidebar
+                  zones={scoutZones}
+                  onSelect={(zone) => { setSelectedZone(zone); setShowCapture(true); }}
                 />
-              </div>
-              <div className="order-3">
-                <NextStepsCard result={result} />
-              </div>
-              <div className="order-4">
-                <DiagnosticsWeatherCard data={weatherData} loading={weatherLoading} result={result} />
-              </div>
-              <div className="order-5">
-                <DiagnosticLegend
-                  problems={result.problems}
-                  hasOverlaps={result.farmStats.overlapCells > 0}
-                  totalCells={result.farmStats.totalCells}
-                />
-              </div>
+              )}
+              {nearestKVK && <NearestKVKCard kvk={nearestKVK} />}
+              <DiagnosticsWeatherCard data={weatherData} loading={weatherLoading} />
+              <DiagnosticLegend
+                problems={result.problems}
+                hasOverlaps={result.farmStats.overlapCells > 0}
+                totalCells={result.farmStats.totalCells}
+              />
             </div>
           </div>
         )}
@@ -406,6 +412,29 @@ const FieldDiagnostics: React.FC = () => {
           </Card>
         )}
       </main>
+
+      {showCapture && selectedZone && (
+        <ScoutZoneCapture
+          zone={selectedZone}
+          farmId={farmId!}
+          crop={selectedZone.crop || 'rice'}
+          growthStage={selectedZone.growth_stage || 'tillering'}
+          onClose={() => { setShowCapture(false); setSelectedZone(null); }}
+          onDiagnosed={(zone, diag) => {
+            setScoutZones((prev) =>
+              prev.map((z) =>
+                z.id === zone.id
+                  ? { ...z, status: diag.confidence >= 0.65 ? 'confirmed' : 'scouted' }
+                  : z
+              )
+            );
+            toast({
+              title: `${diseaseDisplayName(diag.confirmed_diagnosis)} — ${(diag.confidence * 100).toFixed(0)}% confidence`,
+              variant: diag.confidence >= 0.65 ? 'destructive' : 'default',
+            });
+          }}
+        />
+      )}
     </div>
   );
 };

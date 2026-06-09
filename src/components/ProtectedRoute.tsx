@@ -1,8 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Navigate } from 'react-router-dom';
 import { Skeleton } from '@/components/ui/skeleton';
-
-const FARMS_STORAGE_KEY = 'sentinel_farms';
+import { getAllFarms } from '@/services/farmService';
 
 interface ProtectedRouteProps {
   children: React.ReactNode;
@@ -13,26 +12,31 @@ interface ProtectedRouteProps {
   requireFarm?: boolean;
 }
 
-function hasLocalFarms(): boolean {
-  try {
-    const data = localStorage.getItem(FARMS_STORAGE_KEY);
-    if (!data) return false;
-    const farms = JSON.parse(data);
-    return Array.isArray(farms) && farms.length > 0;
-  } catch {
-    return false;
-  }
-}
-
 export function ProtectedRoute({ children, requireFarm = false }: ProtectedRouteProps) {
   const [isReady, setIsReady] = useState(false);
   const [shouldRedirect, setShouldRedirect] = useState(false);
 
   useEffect(() => {
-    if (requireFarm && !hasLocalFarms()) {
-      setShouldRedirect(true);
-    }
-    setIsReady(true);
+    let cancelled = false;
+
+    const checkRoute = async () => {
+      if (requireFarm) {
+        const farms = await getAllFarms();
+        if (!cancelled) {
+          setShouldRedirect(farms.length === 0);
+        }
+      }
+
+      if (!cancelled) {
+        setIsReady(true);
+      }
+    };
+
+    checkRoute();
+
+    return () => {
+      cancelled = true;
+    };
   }, [requireFarm]);
 
   if (!isReady) {

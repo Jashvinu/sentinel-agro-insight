@@ -1,8 +1,17 @@
-import { type Farm, type FarmInsert, type Geometry } from './supabase';
+import { isSupabaseAvailable, supabase, type Farm, type FarmInsert, type Geometry } from './supabase';
 import { bbox, area, circle } from '@turf/turf';
 
 // Local storage key for farms
 const FARMS_STORAGE_KEY = 'sentinel_farms';
+const OFFLINE_TRACE_QUEUE_KEY = 'offline_trace_queue';
+
+interface OfflineQueueEntry {
+  id: string;
+  type: 'farm_upsert' | 'trace_event' | 'trace_lot';
+  payload: Record<string, unknown>;
+  createdAt: string;
+  lastError?: string;
+}
 
 /**
  * Generate a unique ID for farms
@@ -33,6 +42,53 @@ function saveFarmsToStorage(farms: Farm[]): void {
   } catch (error) {
     console.error('Error saving farms to localStorage:', error);
   }
+}
+
+function isUuid(value?: string | null): value is string {
+  return Boolean(value && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value));
+}
+
+function normalizeFarm(row: Record<string, any>): Farm {
+  const geometry = typeof row.geometry === 'string' ? JSON.parse(row.geometry) : row.geometry;
+
+  return {
+    id: String(row.id),
+    name: String(row.name),
+    geometry,
+    bounds: row.bounds ?? null,
+    area_hectares: row.area_hectares !== null && row.area_hectares !== undefined
+      ? Number(row.area_hectares)
+      : null,
+    user_id: row.user_id ?? null,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+
+function enqueueOffline(entry: Omit<OfflineQueueEntry, 'id' | 'createdAt'>): void {
+  try {
+    const existing = localStorage.getItem(OFFLINE_TRACE_QUEUE_KEY);
+    const queue: OfflineQueueEntry[] = existing ? JSON.parse(existing) : [];
+    queue.push({
+      ...entry,
+      id: generateId(),
+      createdAt: new Date().toISOString(),
+    });
+    localStorage.setItem(OFFLINE_TRACE_QUEUE_KEY, JSON.stringify(queue));
+  } catch (error) {
+    console.warn('[FarmService] Could not persist offline queue entry:', error);
+  }
+}
+
+function mergeFarmIntoStorage(farm: Farm): void {
+  const farms = getFarmsFromStorage();
+  const index = farms.findIndex((existing) => existing.id === farm.id);
+  if (index >= 0) {
+    farms[index] = farm;
+  } else {
+    farms.unshift(farm);
+  }
+  saveFarmsToStorage(farms);
 }
 
 /**
@@ -97,6 +153,35 @@ export async function saveFarm(farmData: FarmInsert): Promise<Farm | null> {
     // Calculate area if not provided
     const area_hectares = farmData.area_hectares || calculateArea(farmData.geometry);
 
+    if (isSupabaseAvailable() && supabase) {
+      const { data, error } = await supabase.rpc('upsert_farm_geojson', {
+        p_name: farmData.name,
+        p_geometry: farmData.geometry,
+        p_bounds: bounds,
+        p_area_hectares: area_hectares,
+        p_user_id: isUuid(farmData.user_id) ? farmData.user_id : null,
+      });
+
+      if (!error && Array.isArray(data) && data[0]) {
+        const farm = normalizeFarm(data[0]);
+        mergeFarmIntoStorage(farm);
+        console.log('[FarmService] Farm saved to Supabase:', farm.id);
+        return farm;
+      }
+
+      console.warn('[FarmService] Supabase farm save failed; queueing offline fallback:', error?.message);
+      enqueueOffline({
+        type: 'farm_upsert',
+        payload: {
+          name: farmData.name,
+          geometry: farmData.geometry,
+          bounds,
+          area_hectares,
+        },
+        lastError: error?.message,
+      });
+    }
+
     const now = new Date().toISOString();
     const newFarm: Farm = {
       id: generateId(),
@@ -110,9 +195,7 @@ export async function saveFarm(farmData: FarmInsert): Promise<Farm | null> {
     };
 
     // Get existing farms and add the new one
-    const farms = getFarmsFromStorage();
-    farms.unshift(newFarm); // Add to beginning (most recent first)
-    saveFarmsToStorage(farms);
+    mergeFarmIntoStorage(newFarm);
 
     console.log('[FarmService] Farm saved to localStorage:', newFarm.id);
     return newFarm;
@@ -127,6 +210,20 @@ export async function saveFarm(farmData: FarmInsert): Promise<Farm | null> {
  */
 export async function getAllFarms(): Promise<Farm[]> {
   try {
+    if (isSupabaseAvailable() && supabase) {
+      const { data, error } = await supabase.rpc('list_farms_geojson');
+      if (!error && Array.isArray(data)) {
+        const remoteFarms = data.map(normalizeFarm);
+        if (remoteFarms.length > 0) {
+          saveFarmsToStorage(remoteFarms);
+        }
+        console.log('[FarmService] Retrieved', remoteFarms.length, 'farms from Supabase');
+        return remoteFarms;
+      }
+
+      console.warn('[FarmService] Supabase farm lookup failed; using local cache:', error?.message);
+    }
+
     const farms = getFarmsFromStorage();
     console.log('[FarmService] Retrieved', farms.length, 'farms from localStorage');
     return farms;
@@ -141,6 +238,17 @@ export async function getAllFarms(): Promise<Farm[]> {
  */
 export async function getFarmById(id: string): Promise<Farm | null> {
   try {
+    if (isSupabaseAvailable() && supabase && isUuid(id)) {
+      const { data, error } = await supabase.rpc('get_farm_geojson', { p_id: id });
+      if (!error && Array.isArray(data) && data[0]) {
+        const farm = normalizeFarm(data[0]);
+        mergeFarmIntoStorage(farm);
+        return farm;
+      }
+
+      console.warn('[FarmService] Supabase farm-by-id lookup failed; using local cache:', error?.message);
+    }
+
     const farms = getFarmsFromStorage();
     const farm = farms.find(f => f.id === id);
     return farm || null;

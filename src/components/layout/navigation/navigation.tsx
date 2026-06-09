@@ -8,7 +8,8 @@ import {
   Satellite,
   Menu,
   X,
-  Activity
+  Activity,
+  Boxes,
 } from 'lucide-react';
 import { NAVIGATION_ITEMS, APP_CONFIG } from '@/constants';
 import { NavigationItem } from '@/types';
@@ -52,6 +53,9 @@ export const Navigation: React.FC<NavigationProps> = ({
       dashboard: Home,
       'yield-prediction': TrendingUp,
       'advanced-monitoring': Activity,
+      traceability: Boxes,
+      'plot-designer': Home,
+      'field-diagnostics': Activity,
     };
     return iconMap[id as keyof typeof iconMap] || Home;
   };

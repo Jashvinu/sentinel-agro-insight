@@ -77,6 +77,16 @@ FUNCTIONS=(
     "get-available-dates"
     "get-observation-dates"
     "sync-satellite-dates"
+    "trace-lots"
+    "trace-events"
+    "trace-reports"
+    "trace-risk-score"
+    "trace-hash-batch"
+    "qr-public-passport"
+    "rag-advisor"
+    "rag-retrieve"
+    "disease-risk-screen"
+    "disease-image-diagnose"
 )
 
 for fn in "${FUNCTIONS[@]}"; do

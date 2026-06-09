@@ -276,6 +276,110 @@ export async function estimateNitrogen(
     };
 }
 
+// ---------------------------------------------------------------------------
+// Disease Detection Spectral Indices
+// ---------------------------------------------------------------------------
+
+export interface DiseaseIndicesResult {
+  rbviImage: any;        // Rice Blast Vegetation Index
+  cireImage: any;        // Red-Edge Chlorophyll Index
+  mtciImage: any;        // MERIS Terrestrial Chlorophyll Index
+  dwsImage: any;         // Disease Water Stress composite
+  ndviCvImage: any;      // Canopy spatial heterogeneity (sheath blight proxy)
+  ndviImage: any;
+}
+
+/**
+ * Calculate disease-specific spectral indices for rice and millet triage.
+ *
+ * RBVI (Rice Blast Vegetation Index):
+ *   RBVI ≈ 9.78 × B8 − 2.08 × (B5 / B4)
+ *   Source: MDPI Agronomy 2024, doi:10.3390/agronomy14030602
+ *   95.9% blast detection accuracy vs UAV hyperspectral
+ *
+ * CIre (Red-Edge Chlorophyll Index):
+ *   CIre = (B8 / B5) − 1
+ *   Sensitive to chlorophyll drawdown from disease and N stress
+ *
+ * MTCI (MERIS Terrestrial Chlorophyll Index):
+ *   MTCI = (B8 − B5) / (B5 − B4)
+ *   Canopy-level blast and downy mildew signal
+ *
+ * DWS (Disease Water Stress composite):
+ *   DWS = 0.6 × NDMI + 0.4 × NMDI
+ *   Wet canopy conditions that favor blast / BLB / sheath blight
+ *
+ * NDVI_CV (local coefficient of variation):
+ *   = stdDev(NDVI, 30m kernel) / mean(NDVI, 30m kernel)
+ *   Sheath blight disrupts canopy uniformity → elevated patchiness
+ */
+export async function calculateDiseaseIndices(
+    harmonizedCollection: any,
+    geometry: any,
+): Promise<DiseaseIndicesResult> {
+    const composite = harmonizedCollection.median().clip(geometry);
+
+    // Band aliases — harmonized names set by satellite-utils.ts
+    const B4  = composite.select('red');
+    const B5  = composite.select('rededge');   // Sentinel-2 705 nm; unavailable on Landsat
+    const B8  = composite.select('nir');
+    const B11 = composite.select('swir1');
+    const B12 = composite.select('swir2');
+
+    // RBVI — Sentinel-2 only (requires red-edge band B5)
+    // Approximation: rho_816 ≈ B8, rho_736 ≈ B5, rho_724 ≈ B4
+    let rbviImage: any;
+    try {
+        rbviImage = B8.multiply(9.78)
+            .subtract(B5.divide(B4).multiply(2.08))
+            .clamp(-2, 5)
+            .rename('RBVI');
+    } catch {
+        // Landsat fallback: approximate with NDRE proxy
+        rbviImage = B8.subtract(B4).divide(B8.add(B4))
+            .rename('RBVI');
+    }
+
+    // CIre = (B8 / B5) − 1
+    let cireImage: any;
+    try {
+        cireImage = B8.divide(B5).subtract(1).clamp(0, 10).rename('CIre');
+    } catch {
+        // Landsat fallback: GNDVI-based proxy
+        cireImage = B8.subtract(composite.select('green'))
+            .divide(B8.add(composite.select('green')))
+            .rename('CIre');
+    }
+
+    // MTCI = (B8 − B5) / (B5 − B4)
+    let mtciImage: any;
+    try {
+        mtciImage = B8.subtract(B5).divide(B5.subtract(B4)).clamp(-5, 10).rename('MTCI');
+    } catch {
+        mtciImage = B8.subtract(B4).divide(B8.add(B4)).rename('MTCI');
+    }
+
+    // DWS = 0.6 × NDMI + 0.4 × NMDI
+    const ndmi = B8.subtract(B11).divide(B8.add(B11));
+    const nmdi = B8.subtract(B11.subtract(B12)).divide(B8.add(B11.subtract(B12)));
+    const dwsImage = ndmi.multiply(0.6).add(nmdi.multiply(0.4))
+        .clamp(-1, 1).rename('DWS');
+
+    // NDVI
+    const ndviImage = B8.subtract(B4).divide(B8.add(B4)).clamp(-1, 1).rename('NDVI');
+
+    // NDVI spatial CV (30m kernel — sheath blight patchiness proxy)
+    const kernel = ee.Kernel.square({ radius: 3, units: 'pixels' }); // ~30m for 10m res
+    const localMean   = ndviImage.reduceNeighborhood(ee.Reducer.mean(),   kernel).rename('NDVI_mean');
+    const localStdDev = ndviImage.reduceNeighborhood(ee.Reducer.stdDev(), kernel).rename('NDVI_sd');
+    const ndviCvImage = localStdDev
+        .divide(localMean.abs().max(ee.Image(0.01)))
+        .clamp(0, 2)
+        .rename('NDVI_CV');
+
+    return { rbviImage, cireImage, mtciImage, dwsImage, ndviCvImage, ndviImage };
+}
+
 /**
  * Helper function to reduce statistics for a given image
  */

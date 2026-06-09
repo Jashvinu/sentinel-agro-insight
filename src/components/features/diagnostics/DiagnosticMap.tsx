@@ -4,17 +4,17 @@
  */
 
 import React, { useEffect, useMemo, useState } from 'react';
-import { MapContainer, TileLayer, Rectangle, GeoJSON, ImageOverlay, useMap } from 'react-leaflet';
+import { MapContainer, TileLayer, Rectangle, GeoJSON, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import type { Geometry } from 'geojson';
 import {
   GridCell,
   getCellColor,
   getCellOpacity,
-  getCellSeverityScore,
-  getIndexColor,
   isUrgentCell,
 } from '@/services/diagnosticService';
+import { type ScoutZone } from '@/services/diseaseService';
+import ScoutZoneMap from './ScoutZoneMap';
 import 'leaflet/dist/leaflet.css';
 import { Map, Satellite } from 'lucide-react';
 
@@ -23,10 +23,8 @@ interface DiagnosticMapProps {
   farmGeometry: Geometry | null;
   onCellClick?: (cell: GridCell) => void;
   selectedCellId?: string | null;
-  rasterUrls?: Record<string, string>;
-  rasterBounds?: [[number, number], [number, number]]; // [[south, west], [north, east]]
-  activeIndex?: string;
-  onActiveIndexChange?: (index: string) => void;
+  zones?: ScoutZone[];
+  onZoneSelect?: (zone: ScoutZone) => void;
 }
 
 // Component to fit map bounds to farm
@@ -50,27 +48,15 @@ function FitBounds({ geometry }: { geometry: Geometry | null }) {
   return null;
 }
 
-const RASTER_INDICES = ['ndvi', 'nitrogen', 'phosphorus', 'potassium', 'moisture'] as const;
-const RASTER_INDEX_LABELS: Record<string, string> = {
-  ndvi: 'Crop Health',
-  nitrogen: 'Nitrogen',
-  phosphorus: 'Phosphorus',
-  potassium: 'Potassium',
-  moisture: 'Moisture',
-};
-
 export const DiagnosticMap: React.FC<DiagnosticMapProps> = ({
   cells,
   farmGeometry,
   onCellClick,
   selectedCellId,
-  rasterUrls,
-  rasterBounds,
-  activeIndex,
-  onActiveIndexChange,
+  zones,
+  onZoneSelect,
 }) => {
   const [baseMapType, setBaseMapType] = useState<'satellite' | 'street'>('satellite');
-  const hasRasters = rasterUrls && rasterBounds && Object.keys(rasterUrls).length > 0;
   // Calculate initial center from geometry
   const center = useMemo(() => {
     if (!farmGeometry) return [0, 0] as [number, number];
@@ -108,25 +94,6 @@ export const DiagnosticMap: React.FC<DiagnosticMapProps> = ({
 
   return (
     <div className="relative h-full w-full">
-      {/* Raster index selector (shown only when rasters are available) */}
-      {hasRasters && (
-        <div className="absolute top-3 left-3 z-[1000] flex gap-1">
-          {RASTER_INDICES.filter((idx) => rasterUrls![idx]).map((idx) => (
-            <button
-              key={idx}
-              onClick={() => onActiveIndexChange?.(idx)}
-              className={`px-2.5 py-1 rounded-md text-xs font-medium border transition-colors shadow-sm ${
-                activeIndex === idx
-                  ? 'bg-primary text-primary-foreground border-primary'
-                  : 'bg-white/90 backdrop-blur-sm text-gray-700 border-gray-200 hover:bg-white'
-              }`}
-            >
-              {RASTER_INDEX_LABELS[idx]}
-            </button>
-          ))}
-        </div>
-      )}
-
       {/* Base Map Toggle Button */}
       <div className="absolute top-3 right-3 z-[1000]">
         <button
@@ -167,16 +134,6 @@ export const DiagnosticMap: React.FC<DiagnosticMapProps> = ({
           />
         )}
 
-        {/* Layer 1: Pre-rendered raster overlay (when available) */}
-        {hasRasters && activeIndex && rasterUrls![activeIndex] && (
-          <ImageOverlay
-            url={rasterUrls![activeIndex]}
-            bounds={rasterBounds!}
-            opacity={0.75}
-            zIndex={400}
-          />
-        )}
-
         {/* Farm boundary outline */}
         {farmGeometry && (
           <GeoJSON
@@ -186,66 +143,42 @@ export const DiagnosticMap: React.FC<DiagnosticMapProps> = ({
           />
         )}
 
-        {/* Layer 2: Grid cell rectangles
-            - With rasters: low-opacity diagnostic risk overlay on top of satellite index
-            - Without rasters: original colored overlays (fallback) */}
-        {hasRasters
-          ? cells
-              .filter((cell) => cell.problems.length > 0)
-              .map((cell) => {
-                const isSelected = cell.id === selectedCellId;
-                const activeProblem = activeIndex
-                  ? cell.problems.find((problem) => problem.index === activeIndex)
-                  : undefined;
-                const deEmphasized = Boolean(activeIndex && !activeProblem);
-                const color = activeProblem
-                  ? getIndexColor(activeProblem.index)
-                  : getCellColor(cell) || '#f97316';
-                const severity = getCellSeverityScore(cell);
-                const urgent = isUrgentCell(cell);
-                return (
-                  <Rectangle
-                    key={cell.id}
-                    bounds={cell.bounds as [[number, number], [number, number]]}
-                    pathOptions={{
-                      fillOpacity: isSelected ? 0.48 : deEmphasized ? 0.08 : Math.max(0.16, severity * 0.36),
-                      opacity: isSelected ? 0.95 : deEmphasized ? 0.22 : 0.7,
-                      color: isSelected ? '#ffffff' : urgent ? '#fb7185' : color,
-                      weight: isSelected ? 3 : urgent ? 2 : 1,
-                      fillColor: color,
-                    }}
-                    eventHandlers={{ click: () => onCellClick?.(cell) }}
-                  />
-                );
-              })
-          : cells
-              .filter((cell) => getCellColor(cell) && getCellOpacity(cell) > 0)
-              .sort((a, b) => {
-                const aUrgent = isUrgentCell(a) ? 1 : 0;
-                const bUrgent = isUrgentCell(b) ? 1 : 0;
-                if (aUrgent !== bUrgent) return aUrgent - bUrgent;
-                return a.problems.length - b.problems.length;
-              })
-              .map((cell) => {
-                const color = getCellColor(cell);
-                const opacity = getCellOpacity(cell);
-                const isSelected = cell.id === selectedCellId;
-                const isOverlap = cell.problems.length > 1;
-                const urgent = isUrgentCell(cell);
-                return (
-                  <Rectangle
-                    key={cell.id}
-                    bounds={cell.bounds as [[number, number], [number, number]]}
-                    pathOptions={{
-                      color: isSelected ? '#ffffff' : urgent ? '#ef4444' : isOverlap ? '#ffffff' : color!,
-                      weight: isSelected ? 3 : urgent ? 3 : isOverlap ? 2 : 1,
-                      fillColor: color!,
-                      fillOpacity: opacity,
-                    }}
-                    eventHandlers={{ click: () => onCellClick?.(cell) }}
-                  />
-                );
-              })}
+        {/* Problem cells: keep the satellite image visible and mark only warning spots. */}
+        {cells
+          .filter((cell) => getCellColor(cell) && getCellOpacity(cell) > 0)
+          .sort((a, b) => {
+            const aUrgent = isUrgentCell(a) ? 1 : 0;
+            const bUrgent = isUrgentCell(b) ? 1 : 0;
+            if (aUrgent !== bUrgent) return aUrgent - bUrgent;
+            return a.problems.length - b.problems.length;
+          })
+          .map((cell) => {
+            const color = getCellColor(cell);
+            const isSelected = cell.id === selectedCellId;
+            const isOverlap = cell.problems.length > 1;
+            const urgent = isUrgentCell(cell);
+            const strokeColor = isSelected ? '#ffffff' : urgent ? '#ef4444' : isOverlap ? '#8b5cf6' : color!;
+
+            return (
+              <Rectangle
+                key={cell.id}
+                bounds={cell.bounds as [[number, number], [number, number]]}
+                pathOptions={{
+                  color: strokeColor,
+                  weight: isSelected ? 3 : urgent ? 3 : 2,
+                  fillColor: color!,
+                  fillOpacity: isSelected ? 0.16 : 0.04,
+                  opacity: 0.95,
+                }}
+                eventHandlers={{ click: () => onCellClick?.(cell) }}
+              />
+            );
+          })}
+
+        {/* Scout zone overlays */}
+        {zones && zones.length > 0 && (
+          <ScoutZoneMap zones={zones} onZoneSelect={onZoneSelect ?? (() => {})} />
+        )}
 
         {/* Fit bounds to farm */}
         <FitBounds geometry={farmGeometry} />

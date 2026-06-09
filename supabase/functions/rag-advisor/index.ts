@@ -20,8 +20,19 @@ type GeminiAdvisory = {
   answer?: string;
   priority_actions?: string[];
   disease_risk_triage?: DiseaseRiskItem[] | string[];
+  disease_management?: {
+    confirmed_disease?: string;
+    urgency?: string;
+    action_steps?: string[];
+    spray_window?: string;
+    variety_note?: string;
+    do_not?: string[];
+  };
   followups?: string[];
 };
+
+// Qwen3 via DashScope (OpenAI-compatible)
+const QWEN_MODELS = ['qwen3-235b-a22b', 'qwen3-72b', 'qwen3-32b'];
 
 const DEFAULT_GEMINI_MODELS = ['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-2.5-pro'];
 const DEFAULT_GEMINI_VERSIONS = ['v1beta', 'v1'];
@@ -85,6 +96,78 @@ function uuidOrNull(value: string | undefined): string | null {
     : null;
 }
 
+/**
+ * Call Qwen3-235B via DashScope (OpenAI-compatible API).
+ * Qwen3 supports /think mode for step-by-step reasoning — we disable it for
+ * JSON output to keep latency low.
+ */
+async function callQwen3(prompt: string, vlmDiagnosis?: Record<string, unknown> | null): Promise<{ advisory: GeminiAdvisory | null; model?: string; error?: string }> {
+  const apiKey  = Deno.env.get('QWEN_API_KEY') ?? Deno.env.get('QWEN3_API_KEY');
+  const baseUrl = Deno.env.get('QWEN_BASE_URL') ?? 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1';
+  if (!apiKey) return { advisory: null, error: 'QWEN_API_KEY not configured' };
+
+  // Inject confirmed VLM diagnosis block if available
+  let fullPrompt = prompt;
+  if (vlmDiagnosis?.confirmed_diagnosis && vlmDiagnosis.confirmed_diagnosis !== 'uncertain') {
+    const vd = vlmDiagnosis;
+    const diagBlock = [
+      '\nCONFIRMED FIELD DIAGNOSIS (Qwen-VL photo analysis):',
+      `  Disease: ${vd.confirmed_diagnosis} (confidence: ${((Number(vd.confidence ?? 0)) * 100).toFixed(0)}%)`,
+      `  Severity: ${vd.severity_pct ?? 'unknown'}% leaf area affected`,
+      `  Visual evidence: ${(vd.visual_evidence as string[] ?? []).join(', ')}`,
+      `  Safe to spray now: ${vd.safe_to_spray ?? 'unknown'}`,
+      vd.requires_lab_confirmation ? '  ⚠ Lab/extension confirmation recommended before chemical treatment.' : '',
+    ].filter(Boolean).join('\n');
+    fullPrompt += diagBlock;
+  }
+
+  // Append JSON schema expectation
+  fullPrompt += '\n\nReturn ONLY valid JSON with keys: answer, priority_actions, disease_management, disease_risk_triage, followups.';
+  if (vlmDiagnosis?.confirmed_diagnosis && vlmDiagnosis.confirmed_diagnosis !== 'uncertain') {
+    fullPrompt += '\nInclude disease_management object with: confirmed_disease, urgency (immediate|this_week|monitor), action_steps[], spray_window, variety_note, do_not[].';
+    if (!vlmDiagnosis.safe_to_spray) {
+      fullPrompt += '\nSince safe_to_spray is false/null, do NOT include spray or chemical recommendations in action_steps.';
+    }
+  }
+
+  let lastError = '';
+  for (const model of QWEN_MODELS) {
+    try {
+      const resp = await fetch(`${baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model,
+          messages: [{ role: 'user', content: fullPrompt }],
+          temperature: 0.20,
+          max_tokens: 2400,
+          // Disable thinking mode for structured JSON output
+          extra_body: { enable_thinking: false },
+          response_format: { type: 'json_object' },
+        }),
+      });
+
+      if (!resp.ok) {
+        lastError = `${model}: ${resp.status} ${await resp.text()}`;
+        if (resp.status === 404) continue;
+        break;
+      }
+
+      const data = await resp.json();
+      const text = data.choices?.[0]?.message?.content ?? '';
+      const parsed = safeJsonParse<GeminiAdvisory>(typeof text === 'string' ? text : JSON.stringify(text));
+      if (parsed?.answer) return { advisory: parsed, model: `qwen/${model}` };
+      lastError = `${model}: response missing 'answer' key`;
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : String(err);
+    }
+  }
+  return { advisory: null, error: lastError || 'Qwen3 request failed' };
+}
+
 async function callGemini(prompt: string): Promise<{ advisory: GeminiAdvisory | null; model?: string; error?: string }> {
   const apiKey = Deno.env.get('GEMINI_API_KEY')?.trim();
   if (!apiKey) return { advisory: null, error: 'GEMINI_API_KEY is not configured' };
@@ -142,20 +225,29 @@ Deno.serve(async (req) => {
   }
 
   try {
-    const request = normalizeRequest(await req.json());
+    const body = await req.json();
+    const request = normalizeRequest(body);
     const supabase = createSupabaseClient(req);
     const context = await loadFarmContext(supabase, {
       farmId: request.farm_id,
       geometry: request.geometry,
       diagnosticResult: request.diagnostic_result,
     });
+    const vlmDiagnosis = (body.vlm_diagnosis as Record<string, unknown> | null | undefined) ?? null;
     const retrieval = await retrieveRagChunks(supabase, request, context);
     const diseaseRisk = buildDiseaseRiskTriage(request, context);
     const remoteSensingSummary = buildRemoteSensingSummary(context);
     const citations = buildCitations(retrieval.chunks);
     const fallback = buildFallbackAdvisory(request, context, retrieval.chunks, diseaseRisk);
-    const gemini = await callGemini(buildGeminiPrompt(request, context, retrieval.chunks, diseaseRisk));
-    const generated = gemini.advisory;
+    const geminiPrompt = buildGeminiPrompt(request, context, retrieval.chunks, diseaseRisk);
+
+    // Qwen3 is primary; Gemini is fallback
+    let advisoryResult = await callQwen3(geminiPrompt, vlmDiagnosis);
+    if (!advisoryResult.advisory) {
+      advisoryResult = await callGemini(geminiPrompt);
+    }
+
+    const generated = advisoryResult.advisory;
     const priorityActions = normalizeStringArray(generated?.priority_actions);
     const followups = normalizeStringArray(generated?.followups);
     const answer = generated?.answer?.trim() || fallback.answer;
@@ -171,7 +263,7 @@ Deno.serve(async (req) => {
         remote_sensing_summary: remoteSensingSummary,
         disease_risk_triage: diseaseRisk,
         citations,
-        provider: gemini.model ?? 'fallback',
+        provider: advisoryResult.model ?? 'fallback',
         used_fallback: usedFallback,
       })
       .select('id')
@@ -186,11 +278,13 @@ Deno.serve(async (req) => {
       citations,
       confidence: confidenceFromEvidence(retrieval.chunks, context),
       followups: followups.length > 0 ? followups : (fallback.followups.length > 0 ? fallback.followups : buildFollowups(request, context)),
+      disease_management: generated?.disease_management ?? null,
+      vlm_diagnosis_used: Boolean(vlmDiagnosis?.confirmed_diagnosis),
       diagnostics: {
         retrieval_source: retrieval.source,
         retrieval_error: retrieval.error,
-        gemini_model: gemini.model,
-        gemini_error: gemini.error,
+        ai_model: advisoryResult.model,
+        ai_error: advisoryResult.error,
         audit_error: auditError?.message,
         used_fallback: usedFallback,
         chunk_count: retrieval.chunks.length,

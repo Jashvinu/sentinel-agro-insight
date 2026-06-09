@@ -7,6 +7,11 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { Skeleton } from "@/components/ui/skeleton";
 import PlotDesigner from "./pages/PlotDesigner";
 import FieldDiagnostics from "./pages/FieldDiagnostics";
+import PublicPassport from "./pages/PublicPassport";
+import Traceability from "./pages/Traceability";
+import TraceEventNew from "./pages/TraceEventNew";
+import TraceLotDetail from "./pages/TraceLotDetail";
+import TraceReportDetail from "./pages/TraceReportDetail";
 import NotFound from "./pages/NotFound";
 import { useAutoSync } from "@/hooks/useAutoSync";
 import { ProtectedRoute } from "@/components/ProtectedRoute";
@@ -99,6 +104,39 @@ const AppContent = () => {
               </ProtectedRoute>
             }
           />
+          <Route
+            path="/traceability"
+            element={
+              <ProtectedRoute>
+                <Traceability />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/traceability/lots/:lotId"
+            element={
+              <ProtectedRoute>
+                <TraceLotDetail />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/traceability/events/new"
+            element={
+              <ProtectedRoute>
+                <TraceEventNew />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/traceability/reports/:reportId"
+            element={
+              <ProtectedRoute>
+                <TraceReportDetail />
+              </ProtectedRoute>
+            }
+          />
+          <Route path="/qr/:token" element={<PublicPassport />} />
 
           {/* Legacy routes — fold back into the new flow */}
           <Route path="/login" element={<Navigate to="/" replace />} />

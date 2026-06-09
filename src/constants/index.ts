@@ -16,6 +16,12 @@ export const API_ENDPOINTS = {
     alerts: '/alerts',
     analytics: '/analytics',
     diagnostics: '/diagnostics',
+    traceLots: '/trace-lots',
+    traceEvents: '/trace-events',
+    traceReports: '/trace-reports',
+    traceRiskScore: '/trace-risk-score',
+    traceHashBatch: '/trace-hash-batch',
+    qrPublicPassport: '/qr-public-passport',
 } as const;
 
 // Map Configuration
@@ -419,6 +425,11 @@ export const NAVIGATION_ITEMS = [
         id: 'field-diagnostics',
         label: 'Field Diagnostics',
         href: '/field-diagnostics',
+    },
+    {
+        id: 'traceability',
+        label: 'Traceability',
+        href: '/traceability',
     },
 ] as const;
 
