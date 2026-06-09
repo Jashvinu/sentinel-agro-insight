@@ -1,3 +1,6 @@
+outputs/
+.codex-screenshots/
+
 # Logs
 logs
 *.log
