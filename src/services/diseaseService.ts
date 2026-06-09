@@ -1,5 +1,5 @@
 import { supabase } from './supabase';
-import { resolveApiBaseUrl } from './api';
+import { API_BASE_URL } from './api';
 
 export interface ScoutZone {
   id: string;
@@ -72,7 +72,7 @@ export async function runDiseaseScreen(params: {
   season?: 'kharif' | 'rabi';
   geometry?: unknown;
 }): Promise<DiseaseScreenResult> {
-  const base = resolveApiBaseUrl();
+  const base = API_BASE_URL;
   const res = await fetch(`${base}/disease-risk-screen`, {
     method: 'POST',
     headers: {
@@ -159,7 +159,7 @@ export async function uploadDiseasePhoto(params: {
 
 /** Trigger VLM diagnosis for a submission (async) */
 export async function triggerImageDiagnosis(submissionId: string): Promise<{ diagnosis: DiagnosisResult; model: string }> {
-  const base = resolveApiBaseUrl();
+  const base = API_BASE_URL;
   const res = await fetch(`${base}/disease-image-diagnose`, {
     method: 'POST',
     headers: {
