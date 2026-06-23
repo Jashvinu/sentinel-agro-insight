@@ -3,6 +3,57 @@
 
 import ee from 'npm:@google/earthengine@1.6.13';
 
+/**
+ * Initialize Google Earth Engine using service account credentials from Deno environment
+ */
+export async function initializeEarthEngine(): Promise<void> {
+  let credentials: Record<string, string>;
+
+  const credsJson = Deno.env.get('GOOGLE_CREDENTIALS_JSON');
+  if (credsJson) {
+    try {
+      const parsed = JSON.parse(credsJson);
+      if (parsed.private_key) parsed.private_key = parsed.private_key.replace(/\\n/g, '\n');
+      credentials = parsed;
+    } catch (e: any) {
+      throw new Error(`Invalid GOOGLE_CREDENTIALS_JSON: ${e.message}`);
+    }
+  } else {
+    const privateKey = Deno.env.get('GOOGLE_PRIVATE_KEY');
+    const clientEmail = Deno.env.get('GOOGLE_CLIENT_EMAIL');
+    if (!privateKey || !clientEmail) {
+      throw new Error('Earth Engine credentials missing: set GOOGLE_CREDENTIALS_JSON or GOOGLE_PRIVATE_KEY + GOOGLE_CLIENT_EMAIL');
+    }
+    credentials = {
+      type: 'service_account',
+      project_id: Deno.env.get('GOOGLE_PROJECT_ID') ?? '',
+      private_key_id: Deno.env.get('GOOGLE_PRIVATE_KEY_ID') ?? '',
+      private_key: privateKey.replace(/\\n/g, '\n'),
+      client_email: clientEmail,
+      client_id: Deno.env.get('GOOGLE_CLIENT_ID') ?? '',
+      auth_uri: 'https://accounts.google.com/o/oauth2/auth',
+      token_uri: 'https://oauth2.googleapis.com/token',
+      auth_provider_x509_cert_url: 'https://www.googleapis.com/oauth2/v1/certs',
+      client_x509_cert_url: Deno.env.get('GOOGLE_CLIENT_X509_CERT_URL') ?? '',
+    };
+  }
+
+  return new Promise((resolve, reject) => {
+    ee.data.authenticateViaPrivateKey(
+      credentials,
+      () => {
+        ee.initialize(
+          null,
+          null,
+          () => resolve(),
+          (err: any) => reject(new Error(err))
+        );
+      },
+      (err: any) => reject(new Error(err))
+    );
+  });
+}
+
 // Satellite configurations
 export const SATELLITES = {
   SENTINEL2: {

@@ -23,8 +23,10 @@ import { handleCors } from '../_shared/cors.ts';
 import { errorResponse, successResponse } from '../_shared/response.ts';
 import { initializeEarthEngine, evaluate } from '../_shared/satellite-utils.ts';
 import { calculateDiseaseIndices } from '../_shared/optical-algorithms.ts';
+import { computeThermalStress } from '../_shared/thermal-utils.ts';
 import {
   scoreCropDiseases,
+  thermalConfounder,
   parseGrowthStage,
   type SpectralFeatures,
   type WeatherFeatures,
@@ -33,13 +35,16 @@ import {
 const SCOUT_ZONE_MIN_RISK = 0.40;   // cells above this are candidates
 const SCOUT_ZONE_MERGE_M  = 50;     // meters — merge radius for clustering
 const SCOUT_ZONE_MAX      = 5;      // max scout zones returned per scan
+const HOTSPOT_DIST_M      = 90;     // Getis-Ord Gi* neighbourhood distance band
+const HOTSPOT_Z_SIG       = 1.96;   // |z| > 1.96 ≈ 95% significant hot cluster
 
 function createSupabaseClient(req: Request) {
   const url  = Deno.env.get('SUPABASE_URL');
   const key  = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? Deno.env.get('SUPABASE_ANON_KEY');
   if (!url || !key) throw new Error('Supabase env not configured');
+  // Always use the service role key as Authorization to bypass RLS for DB writes
   return createClient(url, key, {
-    global: { headers: { Authorization: req.headers.get('Authorization') ?? `Bearer ${key}` } },
+    global: { headers: { Authorization: `Bearer ${key}` } },
   });
 }
 
@@ -70,28 +75,77 @@ interface RiskCell {
   moisture: number;
   weather_risk: number;
   per_disease: Record<string, number>;
+  ribinir: number;
+  ribired: number;
+  redsi: number;
+  psri: number;
+  thermal_stress: number;
+  anomaly_z: number;
+  likely_abiotic: boolean;
+  gi_star_z?: number;
 }
 
-/** Greedy radius merge → scout zones */
+interface ScoutZone {
+  centroid_lat: number;
+  centroid_lng: number;
+  radius_meters: number;
+  disease_candidates: string[];
+  max_risk_score: number;
+  cell_count: number;
+  hotspot_z: number;
+  significance: 'significant' | 'marginal';
+}
+
+/**
+ * Getis-Ord Gi* hotspot z-score for each cell over the composite-risk field.
+ * A neighbourhood (incl. self) is the cells within HOTSPOT_DIST_M. Gi* tells us
+ * whether a local cluster of high risk is statistically real vs. noise, replacing
+ * the arbitrary radius merge. Mutates each cell's `gi_star_z`.
+ */
+function computeGiStar(cells: RiskCell[], distM: number): void {
+  const n = cells.length;
+  if (n < 3) {
+    for (const c of cells) c.gi_star_z = 0;
+    return;
+  }
+  const x = cells.map((c) => c.composite_risk);
+  const mean = x.reduce((s, v) => s + v, 0) / n;
+  const variance = x.reduce((s, v) => s + (v - mean) ** 2, 0) / n;
+  const S = Math.sqrt(Math.max(variance, 1e-9));
+
+  for (let i = 0; i < n; i++) {
+    let sumW = 0;        // Σ w_ij (binary 0/1, self included)
+    let sumWx = 0;       // Σ w_ij x_j
+    for (let j = 0; j < n; j++) {
+      const w = i === j || distanceM(cells[i].lat, cells[i].lng, cells[j].lat, cells[j].lng) <= distM ? 1 : 0;
+      if (w) { sumW += 1; sumWx += x[j]; }
+    }
+    // Gi* = (Σw x − X̄ Σw) / (S √[(n Σw² − (Σw)²)/(n−1)]); w² = w for binary weights
+    const numer = sumWx - mean * sumW;
+    const denom = S * Math.sqrt(Math.max((n * sumW - sumW * sumW) / (n - 1), 1e-9));
+    cells[i].gi_star_z = denom > 0 ? numer / denom : 0;
+  }
+}
+
+/**
+ * Build scout zones from Gi*-significant hot cells. Only cells that are both
+ * above the risk floor AND statistically hot (Gi* z > sig) seed zones; contiguous
+ * hot cells within mergeM are merged. Output shape matches the legacy clusterer
+ * (plus hotspot_z / significance) so downstream code is unchanged.
+ */
 function clusterToZones(
   cells: RiskCell[],
   minRisk: number,
   mergeM: number,
   maxZones: number,
-) {
+): ScoutZone[] {
+  computeGiStar(cells, HOTSPOT_DIST_M);
+
   const candidates = cells
-    .filter((c) => c.composite_risk >= minRisk)
-    .sort((a, b) => b.composite_risk - a.composite_risk);
+    .filter((c) => c.composite_risk >= minRisk && (c.gi_star_z ?? 0) >= HOTSPOT_Z_SIG)
+    .sort((a, b) => (b.gi_star_z ?? 0) - (a.gi_star_z ?? 0));
 
-  const zones: Array<{
-    centroid_lat: number;
-    centroid_lng: number;
-    radius_meters: number;
-    disease_candidates: string[];
-    max_risk_score: number;
-    cell_count: number;
-  }> = [];
-
+  const zones: ScoutZone[] = [];
   const used = new Set<number>();
 
   for (let i = 0; i < candidates.length && zones.length < maxZones; i++) {
@@ -110,8 +164,10 @@ function clusterToZones(
 
     const centroid_lat = members.reduce((s, c) => s + c.lat, 0) / members.length;
     const centroid_lng = members.reduce((s, c) => s + c.lng, 0) / members.length;
-    const allDiseases  = [...new Set(members.flatMap((c) => c.disease_candidates))];
+    // Exclude likely-abiotic cells from the zone's disease roster.
+    const allDiseases  = [...new Set(members.filter((c) => !c.likely_abiotic).flatMap((c) => c.disease_candidates))];
     const maxRisk      = Math.max(...members.map((c) => c.composite_risk));
+    const maxZ         = Math.max(...members.map((c) => c.gi_star_z ?? 0));
 
     zones.push({
       centroid_lat,
@@ -120,6 +176,8 @@ function clusterToZones(
       disease_candidates: allDiseases,
       max_risk_score: maxRisk,
       cell_count: members.length,
+      hotspot_z: Number(maxZ.toFixed(3)),
+      significance: maxZ >= HOTSPOT_Z_SIG ? 'significant' : 'marginal',
     });
   }
 
@@ -128,32 +186,31 @@ function clusterToZones(
 
 /** Fetch Open-Meteo 7-day lookback weather for a lat/lng */
 async function fetchWeatherRisk(lat: number, lng: number): Promise<WeatherFeatures> {
-  try {
-    const url =
-      `https://api.open-meteo.com/v1/forecast?` +
-      `latitude=${lat}&longitude=${lng}` +
-      `&hourly=temperature_2m,relative_humidity_2m,precipitation` +
-      `&past_days=7&forecast_days=1&timezone=Asia%2FKolkata`;
+  const url =
+    `https://api.open-meteo.com/v1/forecast?` +
+    `latitude=${lat}&longitude=${lng}` +
+    `&hourly=temperature_2m,relative_humidity_2m,precipitation` +
+    `&past_days=7&forecast_days=1&timezone=Asia%2FKolkata`;
 
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`Open-Meteo ${res.status}`);
-    const data = await res.json();
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Open-Meteo ${res.status}`);
+  const data = await res.json();
 
-    const temps: number[]    = data.hourly?.temperature_2m ?? [];
-    const rhs: number[]      = data.hourly?.relative_humidity_2m ?? [];
-    const rain: number[]     = data.hourly?.precipitation ?? [];
+  const temps: number[] = data.hourly?.temperature_2m ?? [];
+  const rhs: number[] = data.hourly?.relative_humidity_2m ?? [];
+  const rain: number[] = data.hourly?.precipitation ?? [];
 
-    const hours2028  = temps.filter((t) => t >= 20 && t <= 28).length;
-    const leafWet    = rhs.filter((rh) => rh >= 80).length;
-    const totalRain  = rain.reduce((s: number, v: number) => s + (v ?? 0), 0);
-    const meanTemp   = temps.length > 0 ? temps.reduce((s, v) => s + v, 0) / temps.length : 26;
-    const maxRh      = rhs.length > 0 ? Math.max(...rhs) : 80;
-
-    return { hours_temp_20_28c: hours2028, leaf_wetness_hours: leafWet, max_rh_pct: maxRh, total_rain_mm: totalRain, mean_temp_c: meanTemp };
-  } catch {
-    // sensible kharif Maharashtra defaults on failure
-    return { hours_temp_20_28c: 40, leaf_wetness_hours: 30, max_rh_pct: 82, total_rain_mm: 30, mean_temp_c: 26 };
+  if (temps.length === 0 || rhs.length === 0 || rain.length === 0) {
+    throw new Error('Open-Meteo response missing required hourly weather arrays.');
   }
+
+  const hours2028 = temps.filter((t) => t >= 20 && t <= 28).length;
+  const leafWet = rhs.filter((rh) => rh >= 80).length;
+  const totalRain = rain.reduce((s: number, v: number) => s + (v ?? 0), 0);
+  const meanTemp = temps.reduce((s, v) => s + v, 0) / temps.length;
+  const maxRh = Math.max(...rhs);
+
+  return { hours_temp_20_28c: hours2028, leaf_wetness_hours: leafWet, max_rh_pct: maxRh, total_rain_mm: totalRain, mean_temp_c: meanTemp };
 }
 
 Deno.serve(async (req) => {
@@ -191,7 +248,7 @@ Deno.serve(async (req) => {
 
     // Build date window (14 days)
     const endDate   = body.end_date   ?? scanDate;
-    const startDate = body.start_date ?? new Date(new Date(endDate).getTime() - 14 * 86400000)
+    const startDate = body.start_date ?? new Date(new Date(endDate).getTime() - 45 * 86400000)
       .toISOString().split('T')[0];
 
     // Load Sentinel-2 harmonized collection
@@ -200,9 +257,9 @@ Deno.serve(async (req) => {
       .filterDate(startDate, endDate)
       .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 30))
       .map((img: any) => {
-        return img.rename(['B1','B2','B3','B4','B5','B6','B7','B8','B8A','B9','B10','B11','B12','QA60'])
-          .select(['B2','B3','B4','B5','B8','B11','B12'],
-                  ['blue','green','red','rededge','nir','swir1','swir2'])
+        return img.select(
+            ['B2','B3','B4','B5','B6','B7','B8','B8A','B11','B12'],
+            ['blue','green','red','rededge','rededge2','rededge3','nir','nir2','swir1','swir2'])
           .multiply(0.0001);
       });
 
@@ -219,8 +276,13 @@ Deno.serve(async (req) => {
     // Compute disease indices
     const diseaseIndices = await calculateDiseaseIndices(s2Collection, eeGeometry);
 
-    // Also get baseline NDVI (prior 14–28 days)
-    const baselineStart = new Date(new Date(startDate).getTime() - 14 * 86400000).toISOString().split('T')[0];
+    // Multi-temporal NDVI baseline: per-pixel mean + stdDev over the prior ~56 days
+    // (≈4 Sentinel-2 revisit cycles). Comparing the current scan to each cell's OWN
+    // temporal baseline cancels field-wide drought/rain — only within-field anomalies
+    // survive (research doc §3/§5). anomaly_z is derived per cell below.
+    const BASELINE_DAYS = 56;
+    const baselineStart = new Date(new Date(startDate).getTime() - BASELINE_DAYS * 86400000)
+      .toISOString().split('T')[0];
     const baselineCollection = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
       .filterBounds(eeGeometry)
       .filterDate(baselineStart, startDate)
@@ -229,9 +291,11 @@ Deno.serve(async (req) => {
         img.select(['B4','B8'], ['red','nir']).multiply(0.0001)
           .normalizedDifference(['nir','red']).rename('NDVI')
       );
-    const baselineNDVI = baselineCollection.size().gt(0)
-      ? baselineCollection.median()
-      : diseaseIndices.ndviImage; // fallback to current if no baseline
+    const baselineMean = baselineCollection.mean().rename('NDVI_baseline');
+    const baselineSd   = baselineCollection.reduce(ee.Reducer.stdDev()).rename('NDVI_baseline_sd');
+
+    // Thermal water-stress proxy (Landsat/MODIS LST) for confounder reduction
+    const thermalStressImage = await computeThermalStress(eeGeometry, startDate, endDate);
 
     // Moisture from NDMI
     const ndmiImage = diseaseIndices.dwsImage; // DWS includes NDMI component
@@ -251,8 +315,14 @@ Deno.serve(async (req) => {
       diseaseIndices.dwsImage,
       diseaseIndices.ndviCvImage,
       diseaseIndices.ndviImage,
+      diseaseIndices.ribinirImage,
+      diseaseIndices.ribiredImage,
+      diseaseIndices.redsiImage,
+      diseaseIndices.psriImage,
       moistureImage,
-      baselineNDVI.rename ? baselineNDVI.rename('NDVI_baseline') : baselineNDVI,
+      baselineMean,
+      baselineSd,
+      thermalStressImage,
     ]);
 
     const samples = stackedImage.sample({
@@ -267,9 +337,9 @@ Deno.serve(async (req) => {
     // Fetch weather once for the farm centroid
     let farmLat = 0;
     let farmLng = 0;
-    if (farmBounds) {
-      farmLat = ((farmBounds[0][0] as number) + (farmBounds[1][0] as number)) / 2;
-      farmLng = ((farmBounds[0][1] as number) + (farmBounds[1][1] as number)) / 2;
+    if (Array.isArray(farmBounds) && farmBounds.length >= 2 && Array.isArray(farmBounds[0]) && Array.isArray(farmBounds[1])) {
+      farmLat = (((farmBounds[0][0] as number) ?? 0) + ((farmBounds[1][0] as number) ?? 0)) / 2;
+      farmLng = (((farmBounds[0][1] as number) ?? 0) + ((farmBounds[1][1] as number) ?? 0)) / 2;
     } else {
       const centroid: any = await evaluate(eeGeometry.centroid());
       farmLng = centroid.coordinates?.[0] ?? 0;
@@ -289,6 +359,7 @@ Deno.serve(async (req) => {
 
       if (!lat || !lng) continue;
 
+      const ndviBaseline = props['NDVI_baseline'] ?? props['NDVI'] ?? 0.3;
       const spec: SpectralFeatures = {
         ndvi:           props['NDVI']          ?? 0.3,
         ndvi_cv:        props['NDVI_CV']       ?? 0,
@@ -297,10 +368,23 @@ Deno.serve(async (req) => {
         mtci:           props['MTCI']          ?? 1.5,
         dws:            props['DWS']           ?? 0,
         moisture:       props['moisture']      ?? 20,
-        ndvi_baseline:  props['NDVI_baseline'] ?? props['NDVI'] ?? 0.3,
+        ndvi_baseline:  ndviBaseline,
+        ribinir:        props['RIBInir'],
+        ribired:        props['RIBIred'],
+        redsi:          props['REDSI'],
+        psri:           props['PSRI'],
+        thermal_stress: props['thermal_stress'],
       };
 
+      // Per-cell temporal anomaly z-score: how far this scan's NDVI sits BELOW the
+      // cell's own rolling baseline, in baseline-stdDev units (positive = decline).
+      const baselineSdVal = props['NDVI_baseline_sd'];
+      const anomaly_z = baselineSdVal && baselineSdVal > 0.01
+        ? (ndviBaseline - spec.ndvi) / baselineSdVal
+        : 0;
+
       const cropRisk = scoreCropDiseases(crop, season, spec, weather, growthStage);
+      const { likely_abiotic } = thermalConfounder(spec);
 
       const perDisease: Record<string, number> = {};
       for (const d of cropRisk.applicable_diseases) {
@@ -323,10 +407,20 @@ Deno.serve(async (req) => {
         moisture:     spec.moisture,
         weather_risk: (weather.hours_temp_20_28c / 72 + weather.leaf_wetness_hours / 60) / 2,
         per_disease:  perDisease,
+        ribinir:        spec.ribinir ?? 0,
+        ribired:        spec.ribired ?? 0,
+        redsi:          spec.redsi ?? 0,
+        psri:           spec.psri ?? 0,
+        thermal_stress: spec.thermal_stress ?? 0,
+        anomaly_z:      Number(anomaly_z.toFixed(3)),
+        likely_abiotic,
       });
     }
 
-    // Persist risk cells to DB
+    // Generate scout zones (computes per-cell Gi* z-scores, mutated onto riskCells)
+    const scoutZones = clusterToZones(riskCells, SCOUT_ZONE_MIN_RISK, SCOUT_ZONE_MERGE_M, SCOUT_ZONE_MAX);
+
+    // Persist risk cells to DB (after Gi* so gi_star_z is populated)
     if (farmId && riskCells.length > 0) {
       const rows = riskCells.map((c) => ({
         farm_id:       farmId,
@@ -350,30 +444,37 @@ Deno.serve(async (req) => {
         ndvi:               c.ndvi,
         moisture:           c.moisture,
         weather_risk:       c.weather_risk,
+        ribinir:            c.ribinir,
+        ribired:            c.ribired,
+        redsi:              c.redsi,
+        psri:               c.psri,
+        thermal_stress:     c.thermal_stress,
+        anomaly_z:          c.anomaly_z,
+        gi_star_z:          c.gi_star_z ?? null,
+        likely_abiotic:     c.likely_abiotic,
       }));
 
       // upsert in batches of 100
       for (let i = 0; i < rows.length; i += 100) {
-        await supabase.from('disease_risk_cells').insert(rows.slice(i, i + 100));
+        const { error } = await supabase.from('disease_risk_cells').insert(rows.slice(i, i + 100));
+        if (error) throw new Error(`Failed to insert disease risk cells: ${error.message}`);
       }
     }
-
-    // Generate scout zones
-    const scoutZones = clusterToZones(riskCells, SCOUT_ZONE_MIN_RISK, SCOUT_ZONE_MERGE_M, SCOUT_ZONE_MAX);
 
     // Persist scout zones
     const savedZones: any[] = [];
     if (farmId) {
       // delete old pending zones for this farm+date
-      await supabase
+      const { error: deleteError } = await supabase
         .from('disease_scout_zones')
         .delete()
         .eq('farm_id', farmId)
         .eq('scan_date', scanDate)
         .eq('status', 'pending');
+      if (deleteError) throw new Error(`Failed to clear old disease scout zones: ${deleteError.message}`);
 
       for (let i = 0; i < scoutZones.length; i++) {
-        const { data: zoneRow } = await supabase
+        const { data: zoneRow, error: zoneError } = await supabase
           .from('disease_scout_zones')
           .insert({
             farm_id:           farmId,
@@ -385,11 +486,14 @@ Deno.serve(async (req) => {
             disease_candidates: scoutZones[i].disease_candidates,
             max_risk_score:    scoutZones[i].max_risk_score,
             cell_count:        scoutZones[i].cell_count,
+            hotspot_z:         scoutZones[i].hotspot_z,
+            significance:      scoutZones[i].significance,
             crop,
             growth_stage:      body.growth_stage ?? growthStage,
           })
           .select()
           .maybeSingle();
+        if (zoneError) throw new Error(`Failed to insert disease scout zone: ${zoneError.message}`);
         if (zoneRow) savedZones.push(zoneRow);
       }
     }
