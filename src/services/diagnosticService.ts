@@ -351,9 +351,21 @@ function getStageThresholds(crop: DiagnosticCropProfile = 'generic', stage: Grow
 }
 
 // Keep the old export name as an alias so callers that pass no stage still work.
-// Will be removed once P3 wires sowing_date through the full call chain.
 function getSeasonalThresholds(crop: DiagnosticCropProfile = 'generic', stage?: GrowthStage): DiagnosticThresholds {
   return getStageThresholds(crop, stage ?? 'tillering');
+}
+
+/**
+ * Infer growth stage from farm-wide NDVI mean when no sowing date is available.
+ * Prevents bare/pre-sowing fields from being penalised with peak-canopy thresholds.
+ *   NDVI < 0.06 → pre_emergence (bare soil / field preparation)
+ *   NDVI 0.06–0.14 → seedling
+ *   NDVI ≥ 0.15 → tillering (safe to apply moderate thresholds)
+ */
+function inferStageFromNdvi(ndviMean?: number): GrowthStage {
+  if (ndviMean === undefined || ndviMean < 0.06) return 'pre_emergence';
+  if (ndviMean < 0.15) return 'seedling';
+  return 'tillering';
 }
 
 /**
@@ -551,12 +563,14 @@ export async function analyzeFarm(
       throw new Error('Diagnostics API returned no cell-level satellite samples; refusing to synthesize map cells.');
     }
 
-    // Derive growth stage from sowing date (falls back to 'tillering' if not provided)
+    // Derive growth stage from sowing date; when absent, infer from NDVI signal so
+    // bare/pre-sowing fields aren't penalised with peak-canopy thresholds.
     const cropFamily = parseCropFamily(crop);
     const phenology = sowingDate
       ? deriveGrowthStage(sowingDate, cropFamily)
       : null;
-    const currentStage: GrowthStage = phenology?.stage ?? 'tillering';
+    const ndviForStage = indexProblems.get('ndvi')?.value;
+    const currentStage: GrowthStage = phenology?.stage ?? inferStageFromNdvi(ndviForStage);
 
     assignProblemsToCells(cells, indexProblems, problemSummaries, cellData, crop, currentStage);
 
@@ -697,7 +711,8 @@ export async function analyzeFarmWithRaster(
 
     const cropFamily = parseCropFamily(crop);
     const phenology = sowingDate ? deriveGrowthStage(sowingDate, cropFamily) : null;
-    const currentStage: GrowthStage = phenology?.stage ?? 'tillering';
+    const ndviForStage = indexProblems.get('ndvi')?.value;
+    const currentStage: GrowthStage = phenology?.stage ?? inferStageFromNdvi(ndviForStage);
 
     assignProblemsToCells(cells, indexProblems, problemSummaries, cellData, crop, currentStage);
 
@@ -1052,7 +1067,10 @@ function assignProblemsToCells(
       if (!Number.isFinite(cellValue) || cellValue < 0) continue;
 
       const issue = evaluateThresholdIssue(cellValue, thresholdsByIndex[index]);
-      const shouldFlag = issue.isCritical || (analysis.trend && issue.isWarning);
+      // During pre_emergence the field is bare — trend signals are field-prep noise, not crop stress.
+      // For all other stages, flag when critically below threshold OR trending down into warning zone.
+      const isPreEmergence = stage === 'pre_emergence';
+      const shouldFlag = issue.isCritical || (!isPreEmergence && analysis.trend && issue.isWarning);
 
       if (!shouldFlag) continue;
 
