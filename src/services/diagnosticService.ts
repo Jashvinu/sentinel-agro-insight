@@ -102,6 +102,12 @@ export interface DiagnosticResult {
     healthyCells: number;
     overlapCells: number;
   };
+  /**
+   * Composite health score 0–100. Weighted average of reliable flagging indices
+   * (N, NDVI, moisture) normalised against stage-appropriate thresholds.
+   * More meaningful than binary healthyCells/totalCells.
+   */
+  compositeHealthScore?: number;
 }
 
 export interface DiagnosticRasterResult extends DiagnosticResult {
@@ -350,6 +356,47 @@ function getSeasonalThresholds(crop: DiagnosticCropProfile = 'generic', stage?: 
   return getStageThresholds(crop, stage ?? 'tillering');
 }
 
+/**
+ * Compute composite health score (0–100) from the flagging indices.
+ * Each index is normalised against its stage-appropriate warning threshold:
+ *   score_i = clamp(value_i / warning_i, 0, 1) × 100
+ * Weighted by confidence: high=1.0, medium=0.7, low=0.4.
+ * Returns undefined when no valid data is available.
+ */
+function computeCompositeHealth(
+  indexProblems: Map<DiagnosticIndex, IndexAnalysis>,
+  crop: DiagnosticCropProfile,
+  stage: GrowthStage,
+): number | undefined {
+  const thresholds = getStageThresholds(crop, stage);
+  const WEIGHTS: Partial<Record<DiagnosticIndex, number>> = {
+    ndvi:     1.0,   // most reliable
+    nitrogen: 0.85,  // reliable via red-edge
+    moisture: 0.70,  // reliable via NDMI
+  };
+  const CONFIDENCE_WEIGHT: Record<DiagnosticConfidence, number> = { high: 1.0, medium: 0.7, low: 0.4 };
+
+  let numerator = 0;
+  let denominator = 0;
+
+  for (const [index, weight] of Object.entries(WEIGHTS) as [DiagnosticIndex, number][]) {
+    const analysis = indexProblems.get(index);
+    if (!analysis) continue;
+    const t = thresholds[index];
+    const warningThreshold = t?.warning ?? t?.low;
+    if (!warningThreshold || warningThreshold <= 0) continue;
+
+    const normalised = Math.min(1, Math.max(0, analysis.value / warningThreshold));
+    const confWeight = CONFIDENCE_WEIGHT[analysis.confidence] ?? 0.7;
+    const effectiveWeight = weight * confWeight;
+    numerator += normalised * effectiveWeight;
+    denominator += effectiveWeight;
+  }
+
+  if (denominator === 0) return undefined;
+  return Math.round((numerator / denominator) * 100);
+}
+
 const TREND_THRESHOLD_PERCENT = -30; // 30% decline triggers trend alert
 const NUTRIENT_TREND_THRESHOLD_POINTS = -15;
 
@@ -524,6 +571,8 @@ export async function analyzeFarm(
       if (a) advisory.push({ index, value: a.value, confidence: a.confidence, label: INDEX_LABELS[index], color: INDEX_COLORS[index] });
     }
 
+    const compositeHealthScore = computeCompositeHealth(indexProblems, crop, currentStage);
+
     const result: DiagnosticResult = {
       cells,
       problems: problemSummaries,
@@ -532,6 +581,7 @@ export async function analyzeFarm(
       growthStage: currentStage,
       growthStageName: phenology?.stageName ?? STAGE_LABELS[currentStage],
       sowingDate: phenology?.sowingDate,
+      compositeHealthScore,
       analysisDate: new Date().toISOString(),
       imagesAnalyzed: metadata.imagesAnalyzed || metadata.daysAnalyzed || 14,
       cloudCover: metadata.cloudCover || metadata.cloud_cover,
@@ -661,6 +711,8 @@ export async function analyzeFarmWithRaster(
       if (a) advisory.push({ index, value: a.value, confidence: a.confidence, label: INDEX_LABELS[index], color: INDEX_COLORS[index] });
     }
 
+    const compositeHealthScore = computeCompositeHealth(indexProblems, crop, currentStage);
+
     const result: DiagnosticRasterResult = {
       cells,
       problems: problemSummaries,
@@ -669,6 +721,7 @@ export async function analyzeFarmWithRaster(
       growthStage: currentStage,
       growthStageName: phenology?.stageName ?? STAGE_LABELS[currentStage],
       sowingDate: phenology?.sowingDate,
+      compositeHealthScore,
       analysisDate: new Date().toISOString(),
       imagesAnalyzed: metadata.imagesAnalyzed || metadata.daysAnalyzed || 14,
       cloudCover: metadata.cloudCover || metadata.cloud_cover,

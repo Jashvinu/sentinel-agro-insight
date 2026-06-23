@@ -1,8 +1,41 @@
 import React, { useMemo } from 'react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { DiagnosticIndex, DiagnosticResult, getIndexColor } from '@/services/diagnosticService';
-import { CheckCircle2, ChevronRight, AlertCircle, Droplets, Leaf, FlaskConical } from 'lucide-react';
+import { CheckCircle2, ChevronRight, AlertCircle, Droplets, Leaf, FlaskConical, Sprout } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { GrowthStage } from '@/services/phenology';
+
+/** What matters most at each growth stage — shown as a contextual banner. */
+const STAGE_FOCUS: Partial<Record<GrowthStage, { headline: string; detail: string }>> = {
+  pre_emergence: {
+    headline: 'Pre-emergence: ensure good seedbed',
+    detail: 'Focus on soil temperature, moisture and seed placement. No leaf-area metrics are meaningful yet.',
+  },
+  seedling: {
+    headline: 'Seedling / Establishment: water and stand count',
+    detail: 'Prioritise uniform water availability and check germination/transplant survival. N uptake is low — wait for tillering before N decisions.',
+  },
+  tillering: {
+    headline: 'Tillering: nitrogen and early disease watch',
+    detail: 'This is the key N window for cereals. Monitor for sheath blight and early blast. Water stress here directly cuts tiller count.',
+  },
+  panicle_initiation: {
+    headline: 'Panicle initiation: protect the yield',
+    detail: 'PI is the most stress-sensitive stage. Any N, water or disease pressure now cuts yield potential sharply.',
+  },
+  heading: {
+    headline: 'Heading / Flowering: blast and water',
+    detail: 'Neck blast risk peaks at heading. Keep soil moist; water deficit at anthesis causes spikelet sterility.',
+  },
+  grain_fill: {
+    headline: 'Grain fill: stay green, avoid water stress',
+    detail: 'Leaf area must stay green until ~10 days before maturity for maximum grain weight. Watch for charcoal rot and late blight.',
+  },
+  maturity: {
+    headline: 'Maturity: plan harvest timing',
+    detail: 'Satellite indices are less actionable at maturity. Focus on harvest timing to avoid field losses.',
+  },
+};
 
 interface NextStepsCardProps {
   result: DiagnosticResult | null;
@@ -103,6 +136,19 @@ export const NextStepsCard: React.FC<NextStepsCardProps> = ({ result }) => {
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
+        {/* Stage focus banner */}
+        {result.growthStage && STAGE_FOCUS[result.growthStage] && (
+          <div className="p-3 rounded-lg border border-primary/20 bg-primary/5 text-xs">
+            <div className="flex items-center gap-1.5 font-semibold text-primary mb-0.5">
+              <Sprout className="w-3.5 h-3.5" />
+              {STAGE_FOCUS[result.growthStage]!.headline}
+            </div>
+            <p className="text-muted-foreground leading-relaxed">
+              {STAGE_FOCUS[result.growthStage]!.detail}
+            </p>
+          </div>
+        )}
+
         {/* Low data quality banner */}
         {result.lowDataQuality && (
           <div className="p-3 rounded-lg border border-amber-200 bg-amber-50 text-xs text-amber-800">

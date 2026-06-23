@@ -49,9 +49,10 @@ export const ProblemSummary: React.FC<ProblemSummaryProps> = ({
   }
 
   const { farmStats, problems, imagesAnalyzed, analysisDate, cells } = result;
-  const healthPercent = Math.round(
-    (farmStats.healthyCells / farmStats.totalCells) * 100
-  );
+  // Use composite score (confidence+stage-weighted) if available; fall back to cell ratio.
+  const healthPercent = result.compositeHealthScore ??
+    Math.round((farmStats.healthyCells / farmStats.totalCells) * 100);
+  const usingComposite = result.compositeHealthScore !== undefined;
   const hasUrgentCells = cells.some(c => isUrgentCell(c));
 
   return (
@@ -103,8 +104,15 @@ export const ProblemSummary: React.FC<ProblemSummaryProps> = ({
             </div>
           </div>
           <span className="text-xs text-muted-foreground">
-            {farmStats.healthyCells} of {farmStats.totalCells} cells healthy
+            {usingComposite
+              ? 'Composite health score'
+              : `${farmStats.healthyCells} of ${farmStats.totalCells} cells healthy`}
           </span>
+          {result.growthStageName && (
+            <span className="text-[10px] text-muted-foreground/70 bg-muted/40 rounded-full px-2 py-0.5">
+              {result.growthStageName}
+            </span>
+          )}
         </div>
 
         {/* Statistics */}

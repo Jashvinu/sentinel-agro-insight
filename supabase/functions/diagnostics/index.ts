@@ -480,6 +480,32 @@ interface PrecomputedImages {
   composite: any;
   firstImage: any;
   lastImage: any;
+  /** SAR-derived moisture image (Sentinel-1 GRD, VH-based). Present when optical cloudFraction >60%. */
+  sarMoisture?: any;
+}
+
+/**
+ * Fetch Sentinel-1 GRD composite and convert VH backscatter to a moisture proxy.
+ * VH (dB) range: −25 dB (dry) to −10 dB (saturated soil).
+ * Linear moisture % ≈ 5 × (VH_dB + 25), clamped to [0, 100].
+ * Published basis: NDWI/SAR moisture coupling, SAR kharif phenology (RS 18:1238).
+ */
+async function fetchSarMoisture(eeGeometry: any, startDate: string, endDate: string): Promise<any | null> {
+  try {
+    const sarCollection = ee.ImageCollection('COPERNICUS/S1_GRD')
+      .filterBounds(eeGeometry)
+      .filterDate(startDate, endDate)
+      .filter(ee.Filter.eq('instrumentMode', 'IW'))
+      .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VH'))
+      .select('VH');
+    const count = await evaluate(sarCollection.size());
+    if (!count || count <= 0) return null;
+    const composite = sarCollection.median();
+    // VH is in dB; linear moisture proxy
+    return composite.multiply(5).add(125).clamp(0, 100).rename('moisture');
+  } catch {
+    return null;
+  }
 }
 
 function authenticate(serviceAccount: any): Promise<void> {
@@ -696,9 +722,11 @@ async function processIndex(
   console.log(`[Diagnostics] Processing ${index}...`);
   const indexStart = Date.now();
 
-  const indexImage = calculator(precomputed.composite);
-  const firstIndex = calculator(precomputed.firstImage);
-  const lastIndex = calculator(precomputed.lastImage);
+  // Use SAR moisture fallback when available (high-cloud / monsoon conditions).
+  const useSarForMoisture = index === 'moisture' && precomputed.sarMoisture;
+  const indexImage = useSarForMoisture ? precomputed.sarMoisture : calculator(precomputed.composite);
+  const firstIndex = useSarForMoisture ? precomputed.sarMoisture : calculator(precomputed.firstImage);
+  const lastIndex = useSarForMoisture ? precomputed.sarMoisture : calculator(precomputed.lastImage);
 
   const visParams = {
     min: INDEX_RANGES[index].min,
@@ -993,6 +1021,20 @@ Deno.serve(async (req) => {
       evaluate(firstWindow.size()),
       evaluate(lastWindow.size()),
     ]);
+    // Compute mean cloud cover early so we can decide on SAR fallback.
+    const meanCloudFraction = await evaluate(collection.aggregate_mean('cloud_cover')).catch(() => null);
+    const needsSarFallback = typeof meanCloudFraction === 'number' && meanCloudFraction > 60;
+
+    const [sarMoisture] = await Promise.all([
+      needsSarFallback
+        ? fetchSarMoisture(eeGeometry, startDate, endDate)
+        : Promise.resolve(null),
+    ]);
+
+    if (sarMoisture) {
+      console.log(`[Diagnostics] SAR moisture fallback active (cloud=${meanCloudFraction?.toFixed(0)}%)`);
+    }
+
     const precomputed: PrecomputedImages = {
       composite: sortedCollection.median(),
       firstImage: firstWindowCount > 0
@@ -1001,6 +1043,7 @@ Deno.serve(async (req) => {
       lastImage: lastWindowCount > 0
         ? lastWindow.median()
         : sortedCollection.sort('system:time_start', false).first(),
+      sarMoisture: sarMoisture ?? undefined,
     };
     console.log(`[Diagnostics] Pre-computed shared images: ${Date.now() - precomputeStart}ms`);
 
@@ -1125,7 +1168,8 @@ Deno.serve(async (req) => {
       imagesAnalyzed: imageCount,
       dateRange: { start: startDate, end: endDate },
       maxCloudCover,
-      cloudCover: await evaluate(collection.aggregate_mean('cloud_cover')).catch(() => null),
+      cloudCover: meanCloudFraction,
+      sarMoistureFallback: needsSarFallback && !!precomputed.sarMoisture,
       resolution: '10m',
       indices,
       season,
