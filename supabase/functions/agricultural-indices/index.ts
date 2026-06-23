@@ -1950,13 +1950,12 @@ Deno.serve(async (req) => {
       console.log(`Filtering to satellite: ${satelliteParam}`);
     }
 
-    // Validate date range - only reject future dates
-    const today = new Date();
-    const todayStr = today.toISOString().split('T')[0];
-
-    if (end > todayStr) {
+    // EE filterDate is exclusive on end, so callers legitimately pass end = date + 1 day.
+    // Cap at tomorrow (today + 1) to allow today's imagery while blocking further-future requests.
+    const tomorrow = new Date(Date.now() + 86400000).toISOString().split('T')[0];
+    if (end > tomorrow) {
       return errorResponse(
-        `Date range extends into the future. Latest allowed date is ${todayStr}. Requested end date: ${end}. Please select today or an earlier date.`,
+        `Date range extends too far into the future. Requested end date: ${end}.`,
         400
       );
     }

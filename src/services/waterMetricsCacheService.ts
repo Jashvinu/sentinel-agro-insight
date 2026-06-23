@@ -7,6 +7,10 @@ import { supabase } from './supabase';
 import { buildApiUrl, getSupabaseFunctionHeaders } from './api';
 import { API_ENDPOINTS } from '@/constants';
 
+// Track whether the water_metrics_cache table exists in the remote DB.
+// Once we detect a 400/404/42P01 error we stop making further DB calls.
+let dbTableAvailable = true;
+
 export interface CachedWaterMetric {
   id: string;
   farm_id: string;
@@ -24,6 +28,7 @@ export interface CachedWaterMetric {
  * Clean up data older than 14 days
  */
 export async function cleanupOldWaterMetrics(farmId: string): Promise<void> {
+  if (!dbTableAvailable) return;
   try {
     const cutoffDate = new Date();
     cutoffDate.setDate(cutoffDate.getDate() - 14);
@@ -36,7 +41,12 @@ export async function cleanupOldWaterMetrics(farmId: string): Promise<void> {
       .lt('observation_date', cutoffDateStr);
 
     if (error) {
-      console.error('Error cleaning up old water metrics:', error);
+      if (String(error.code) === '42P01' || String(error.message).includes('does not exist')) {
+        console.warn('[waterMetricsCache] Table not found – disabling DB cache');
+        dbTableAvailable = false;
+      } else {
+        console.error('Error cleaning up old water metrics:', error);
+      }
     } else {
       console.log(`Cleaned up water metrics older than ${cutoffDateStr} for farm ${farmId}`);
     }
@@ -60,7 +70,9 @@ async function fetchWaterIndexFromAPI(
     }
 
     const polygon = JSON.stringify(farm.geometry);
-    const apiUrl = `${API_ENDPOINTS.agriculturalIndices}?index=${indexType}&polygon=${encodeURIComponent(polygon)}&start=${date}&end=${date}`;
+    // EE filterDate is exclusive on end — add 1 day so a single-day request isn't a zero-length range
+    const endDate = new Date(new Date(date).getTime() + 86400000).toISOString().split('T')[0];
+    const apiUrl = `${API_ENDPOINTS.agriculturalIndices}?index=${indexType}&polygon=${encodeURIComponent(polygon)}&start=${date}&end=${endDate}`;
     
     const headers = getSupabaseFunctionHeaders();
     const response = await fetch(buildApiUrl(apiUrl), {
@@ -74,13 +86,20 @@ async function fetchWaterIndexFromAPI(
     }
 
     const data = await response.json();
-    
-    if (data.mean_value !== null && data.mean_value !== undefined) {
+
+    // agricultural-indices nests per-satellite stats inside data.satellites[]
+    // Pick the first satellite that has a valid mean_value
+    const satEntry = Array.isArray(data.satellites)
+      ? data.satellites.find((s: any) => s.mean_value != null)
+      : null;
+    const source = satEntry ?? data;
+
+    if (source.mean_value != null) {
       return {
-        mean_value: data.mean_value,
-        std_dev: data.std_dev || 0,
-        min_value: data.min_value,
-        max_value: data.max_value,
+        mean_value: source.mean_value,
+        std_dev: source.std_dev ?? 0,
+        min_value: source.min_value ?? undefined,
+        max_value: source.max_value ?? undefined,
       };
     }
 
@@ -95,6 +114,7 @@ async function fetchWaterIndexFromAPI(
  * Get cached water metrics for a farm (last 14 days)
  */
 export async function getCachedWaterMetrics(farmId: string): Promise<CachedWaterMetric[]> {
+  if (!dbTableAvailable) return [];
   try {
     const cutoffDate = new Date();
     cutoffDate.setDate(cutoffDate.getDate() - 14);
@@ -108,7 +128,12 @@ export async function getCachedWaterMetrics(farmId: string): Promise<CachedWater
       .order('observation_date', { ascending: false });
 
     if (error) {
-      console.error('Error fetching cached water metrics:', error);
+      if (String(error.code) === '42P01' || String(error.message).includes('does not exist')) {
+        console.warn('[waterMetricsCache] Table not found – disabling DB cache');
+        dbTableAvailable = false;
+      } else {
+        console.error('Error fetching cached water metrics:', error);
+      }
       return [];
     }
 
@@ -188,39 +213,51 @@ export async function syncWaterMetricsCache(farm: any): Promise<{ fetched: numbe
     for (const date of missingDates) {
       for (const indexType of waterIndices) {
         try {
-          // Check if this specific index+date combo is already cached
-          const { data: existing } = await supabase
-            .from('water_metrics_cache')
-            .select('id')
-            .eq('farm_id', farm.id)
-            .eq('observation_date', date)
-            .eq('index_type', indexType)
-            .single();
+          // Check if this specific index+date combo is already cached (skip if DB unavailable)
+          if (dbTableAvailable) {
+            const { data: existing, error: checkError } = await supabase
+              .from('water_metrics_cache')
+              .select('id')
+              .eq('farm_id', farm.id)
+              .eq('observation_date', date)
+              .eq('index_type', indexType)
+              .single();
 
-          if (existing) {
-            continue; // Already cached
+            if (checkError && (String(checkError.code) === '42P01' || String(checkError.message).includes('does not exist'))) {
+              dbTableAvailable = false;
+            } else if (existing) {
+              continue; // Already cached
+            }
           }
 
           // Fetch from API
           const apiData = await fetchWaterIndexFromAPI(farm, indexType, date);
           
           if (apiData) {
-            // Insert into cache
-            const { error: insertError } = await supabase
-              .from('water_metrics_cache')
-              .insert({
-                farm_id: farm.id,
-                observation_date: date,
-                index_type: indexType,
-                mean_value: apiData.mean_value,
-                std_dev: apiData.std_dev || 0,
-                min_value: apiData.min_value,
-                max_value: apiData.max_value,
-              });
+            // Insert into cache (skip if DB unavailable)
+            if (dbTableAvailable) {
+              const { error: insertError } = await supabase
+                .from('water_metrics_cache')
+                .insert({
+                  farm_id: farm.id,
+                  observation_date: date,
+                  index_type: indexType,
+                  mean_value: apiData.mean_value,
+                  std_dev: apiData.std_dev || 0,
+                  min_value: apiData.min_value,
+                  max_value: apiData.max_value,
+                });
 
-            if (insertError) {
-              console.error(`Error caching ${indexType} for ${date}:`, insertError);
-              errors++;
+              if (insertError) {
+                if (String(insertError.code) === '42P01' || String(insertError.message).includes('does not exist')) {
+                  dbTableAvailable = false;
+                } else {
+                  console.error(`Error caching ${indexType} for ${date}:`, insertError);
+                }
+                errors++;
+              } else {
+                fetched++;
+              }
             } else {
               fetched++;
             }
@@ -228,8 +265,8 @@ export async function syncWaterMetricsCache(farm: any): Promise<{ fetched: numbe
             errors++;
           }
 
-          // Small delay to avoid rate limiting
-          await new Promise(resolve => setTimeout(resolve, 100));
+          // Rate-limit: 300ms between requests to avoid flooding
+          await new Promise(resolve => setTimeout(resolve, 300));
         } catch (error) {
           console.error(`Error fetching ${indexType} for ${date}:`, error);
           errors++;
