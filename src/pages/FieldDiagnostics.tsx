@@ -25,6 +25,8 @@ import {
   diseaseDisplayName,
 } from '@/services/diseaseService';
 import { findNearestKVK, type KVKWithDistance } from '@/services/kvkService';
+import { updateFarmField } from '@/services/farmService';
+import { type Farm } from '@/services/supabase';
 import { DiagnosticMap } from '@/components/features/diagnostics/DiagnosticMap';
 import { DiagnosticLegend } from '@/components/features/diagnostics/DiagnosticLegend';
 import { ProblemDetailPanel } from '@/components/features/diagnostics/ProblemDetailPanel';
@@ -41,6 +43,8 @@ import {
   MapPin,
   ChevronDown,
   Scan,
+  CalendarDays,
+  X,
 } from 'lucide-react';
 import { useWeather } from '@/hooks/useWeather';
 import { DiagnosticsWeatherCard } from '@/components/features/diagnostics/DiagnosticsWeatherCard';
@@ -61,6 +65,34 @@ const FieldDiagnostics: React.FC = () => {
   const [progress, setProgress] = useState(0);
   const [progressMessage, setProgressMessage] = useState('');
   const [selectedCell, setSelectedCell] = useState<GridCell | null>(null);
+
+  // Sowing date banner state
+  const [sowingDateInput, setSowingDateInput] = useState('');
+  const [savingSowingDate, setSavingSowingDate] = useState(false);
+  const [sowingBannerDismissed, setSowingBannerDismissed] = useState(false);
+
+  // Derived: show banner when farm has no sowing date and user hasn't dismissed
+  const showSowingBanner = !!(
+    farm &&
+    !farm.sowing_date &&
+    !sowingBannerDismissed
+  );
+
+  const handleSaveSowingDate = async () => {
+    if (!farmId || !sowingDateInput) return;
+    setSavingSowingDate(true);
+    try {
+      await updateFarmField(farmId, { sowing_date: sowingDateInput });
+      setSowingBannerDismissed(true);
+      // Re-run analysis with the new sowing date so stage thresholds are accurate
+      autoRunTriggeredRef.current = false;
+      setAnalysisError(null);
+      runAnalysis();
+      toast({ title: 'Sowing date saved', description: `Analysis re-run with sowing date ${sowingDateInput}.` });
+    } finally {
+      setSavingSowingDate(false);
+    }
+  };
 
   // Disease scout state
   const [scoutZones, setScoutZones] = useState<ScoutZone[]>([]);
@@ -85,8 +117,14 @@ const FieldDiagnostics: React.FC = () => {
       const cropProfile = normalizeDiagnosticCrop(
         farm.crop_type || farm.cropType || farm.crop || farm.primary_crop || 'rice'
       );
+      // Read sowing_date from localStorage so a just-saved value is picked up
+      // without waiting for the farm hook to reload.
+      const storedFarms: Farm[] = (() => {
+        try { return JSON.parse(localStorage.getItem('sentinel_farms') ?? '[]'); } catch { return []; }
+      })();
+      const storedFarm = storedFarms.find(f => f.id === farmId);
       const sowingDate: string | undefined =
-        farm.sowing_date || farm.sowingDate || undefined;
+        storedFarm?.sowing_date || farm.sowing_date || (farm as any).sowingDate || undefined;
       const analysisResult = await analyzeFarm(
         farmId,
         farm.geometry,
@@ -343,6 +381,41 @@ const FieldDiagnostics: React.FC = () => {
             </Button>
           </div>
         </div>
+
+        {/* Sowing date banner — shown when farm has no sowing date recorded */}
+        {showSowingBanner && (
+          <div className="flex flex-col sm:flex-row sm:items-center gap-3 px-4 py-3 bg-amber-50 border border-amber-200 rounded-lg text-amber-800">
+            <CalendarDays className="w-5 h-5 shrink-0 text-amber-600" />
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium">Set your sowing date for accurate stage thresholds</p>
+              <p className="text-xs text-amber-700/80">Without a sowing date, the system infers growth stage from NDVI — adding the actual date improves threshold accuracy.</p>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <input
+                type="date"
+                value={sowingDateInput}
+                max={new Date().toISOString().split('T')[0]}
+                onChange={e => setSowingDateInput(e.target.value)}
+                className="px-2 py-1 text-sm border border-amber-300 rounded bg-white text-amber-900 focus:outline-none focus:ring-2 focus:ring-amber-400"
+              />
+              <Button
+                size="sm"
+                disabled={!sowingDateInput || savingSowingDate}
+                onClick={handleSaveSowingDate}
+                className="bg-amber-600 hover:bg-amber-700 text-white"
+              >
+                {savingSowingDate ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Save & Re-analyse'}
+              </Button>
+              <button
+                onClick={() => setSowingBannerDismissed(true)}
+                className="p-1 rounded hover:bg-amber-100"
+                aria-label="Dismiss"
+              >
+                <X className="w-4 h-4 text-amber-600" />
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Loading state */}
         {isAnalyzing && (

@@ -264,6 +264,27 @@ export async function updateFarmName(id: string, name: string): Promise<Farm | n
 }
 
 /**
+ * Update a scalar field on a farm (e.g. sowing_date, crop_type).
+ * Persists to localStorage; Supabase sync happens on next full upsert.
+ */
+export async function updateFarmField(
+  id: string,
+  fields: Partial<{ sowing_date: string; crop_type: string }>
+): Promise<Farm | null> {
+  try {
+    const farms = getFarmsFromStorage();
+    const index = farms.findIndex(f => f.id === id);
+    if (index === -1) return null;
+    farms[index] = { ...farms[index], ...fields, updated_at: new Date().toISOString() };
+    saveFarmsToStorage(farms);
+    return farms[index];
+  } catch (error) {
+    console.error('Failed to update farm field:', error);
+    return null;
+  }
+}
+
+/**
  * Delete a farm
  */
 export async function deleteFarm(id: string): Promise<boolean> {

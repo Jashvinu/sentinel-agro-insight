@@ -41,6 +41,8 @@ export interface Farm {
   user_id?: string | null;
   created_at?: string;
   updated_at?: string;
+  sowing_date?: string | null;
+  crop_type?: string | null;
 }
 
 export interface FarmInsert {
