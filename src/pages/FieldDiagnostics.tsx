@@ -3,7 +3,7 @@
  * Displays a diagnostic map showing problem areas on the farm
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Navigation } from '@/components/layout/navigation/navigation';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -15,6 +15,7 @@ import {
   analyzeFarm,
   DiagnosticResult,
   GridCell,
+  normalizeDiagnosticCrop,
 } from '@/services/diagnosticService';
 import {
   ScoutZone,
@@ -55,6 +56,7 @@ const FieldDiagnostics: React.FC = () => {
   // Analysis state
   const [result, setResult] = useState<DiagnosticResult | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [progress, setProgress] = useState(0);
   const [progressMessage, setProgressMessage] = useState('');
   const [selectedCell, setSelectedCell] = useState<GridCell | null>(null);
@@ -73,18 +75,26 @@ const FieldDiagnostics: React.FC = () => {
     }
 
     setIsAnalyzing(true);
+    setAnalysisError(null);
     setProgress(0);
     setProgressMessage('Starting analysis...');
     setSelectedCell(null);
 
     try {
+      const cropProfile = normalizeDiagnosticCrop(
+        farm.crop_type || farm.cropType || farm.crop || farm.primary_crop || 'rice'
+      );
+      const sowingDate: string | undefined =
+        farm.sowing_date || farm.sowingDate || undefined;
       const analysisResult = await analyzeFarm(
         farmId,
         farm.geometry,
+        cropProfile,
         (prog, msg) => {
           setProgress(prog);
           setProgressMessage(msg);
-        }
+        },
+        sowingDate,
       );
 
       setResult(analysisResult);
@@ -104,27 +114,35 @@ const FieldDiagnostics: React.FC = () => {
       }
     } catch (error) {
       console.error('[FieldDiagnostics] Analysis error:', error);
+      const msg = error instanceof Error ? error.message : 'Failed to analyze farm.';
+      setAnalysisError(msg);
       toast({
         title: 'Analysis Failed',
-        description: 'Failed to analyze farm. Please try again.',
+        description: msg.includes('No usable optical images')
+          ? 'No clear satellite imagery found for this location recently. Try again later or check cloud cover conditions.'
+          : 'Failed to analyze farm. Please try again.',
         variant: 'destructive',
       });
     } finally {
       setIsAnalyzing(false);
     }
-  }, [farmId, farm?.geometry, toast]);
+  }, [farmId, farm?.geometry, farm?.crop_type, farm?.cropType, farm?.crop, farm?.primary_crop, toast]);
 
-  // Auto-run analysis when farm loads
+  // Auto-run analysis once when farm first loads — don't retry on failure
+  const autoRunTriggeredRef = useRef(false);
   useEffect(() => {
-    if (farm?.geometry && !result && !isAnalyzing) {
+    if (farm?.geometry && !result && !isAnalyzing && !analysisError && !autoRunTriggeredRef.current) {
+      autoRunTriggeredRef.current = true;
       runAnalysis();
     }
-  }, [farm?.geometry, result, isAnalyzing, runAnalysis]);
+  }, [farm?.geometry, result, isAnalyzing, analysisError, runAnalysis]);
 
-  // Re-run analysis when farm changes
+  // Reset auto-run flag when farm changes so new farm triggers fresh analysis
   useEffect(() => {
     if (farmId && farm?.geometry) {
-      setResult(null); // Clear previous results to trigger new analysis
+      autoRunTriggeredRef.current = false;
+      setResult(null);
+      setAnalysisError(null);
     }
   }, [farmId, farm?.geometry]);
 
@@ -217,7 +235,7 @@ const FieldDiagnostics: React.FC = () => {
               <p className="text-muted-foreground mb-4">
                 Please draw a farm polygon first to run diagnostics.
               </p>
-              <Button onClick={() => navigate('/')}>
+              <Button onClick={() => navigate('/draw-polygon')}>
                 Draw Farm Polygon
               </Button>
             </CardContent>
@@ -250,7 +268,17 @@ const FieldDiagnostics: React.FC = () => {
               </h1>
               {farm && (
                 <p className="text-sm text-muted-foreground">
-                  Analyzing: {farm.name}
+                  {farm.name}
+                  {result?.growthStageName && (
+                    <span className="ml-2 px-1.5 py-0.5 text-xs rounded-sm bg-primary/10 text-primary font-medium">
+                      {result.growthStageName}
+                    </span>
+                  )}
+                  {result?.sowingDate && (
+                    <span className="ml-1.5 text-xs text-muted-foreground/70">
+                      Sown {result.sowingDate}
+                    </span>
+                  )}
                 </p>
               )}
             </div>
@@ -302,7 +330,11 @@ const FieldDiagnostics: React.FC = () => {
             <Button
               variant="outline"
               size="sm"
-              onClick={runAnalysis}
+              onClick={() => {
+                autoRunTriggeredRef.current = false;
+                setAnalysisError(null);
+                runAnalysis();
+              }}
               disabled={isAnalyzing || !farm?.geometry}
             >
               <RefreshCw className={`w-4 h-4 mr-2 ${isAnalyzing ? 'animate-spin' : ''}`} />
@@ -395,8 +427,31 @@ const FieldDiagnostics: React.FC = () => {
           </div>
         )}
 
+        {/* Error state */}
+        {!isAnalyzing && !result && analysisError && farm?.geometry && (
+          <Card>
+            <CardContent className="py-12 text-center">
+              <Activity className="w-12 h-12 mx-auto text-destructive mb-4" />
+              <h2 className="text-lg font-semibold mb-2">Analysis Failed</h2>
+              <p className="text-muted-foreground mb-2 max-w-md mx-auto">
+                {analysisError.includes('No usable optical images')
+                  ? 'No clear satellite imagery was found for this location in the last 30 days. This can happen during monsoon or heavy cloud seasons.'
+                  : 'Failed to run diagnostics. Please check your connection and try again.'}
+              </p>
+              <Button onClick={() => {
+                autoRunTriggeredRef.current = false;
+                setAnalysisError(null);
+                runAnalysis();
+              }}>
+                <RefreshCw className="w-4 h-4 mr-2" />
+                Try Again
+              </Button>
+            </CardContent>
+          </Card>
+        )}
+
         {/* Empty state when not analyzing and no result */}
-        {!isAnalyzing && !result && farm?.geometry && (
+        {!isAnalyzing && !result && !analysisError && farm?.geometry && (
           <Card>
             <CardContent className="py-12 text-center">
               <Activity className="w-12 h-12 mx-auto text-muted-foreground mb-4" />

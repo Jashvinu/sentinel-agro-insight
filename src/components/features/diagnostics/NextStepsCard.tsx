@@ -1,7 +1,7 @@
 import React, { useMemo } from 'react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { DiagnosticIndex, DiagnosticResult, getIndexColor } from '@/services/diagnosticService';
-import { CheckCircle2, ChevronRight, AlertCircle, Droplets, Leaf } from 'lucide-react';
+import { CheckCircle2, ChevronRight, AlertCircle, Droplets, Leaf, FlaskConical } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
 interface NextStepsCardProps {
@@ -46,11 +46,10 @@ export const NextStepsCard: React.FC<NextStepsCardProps> = ({ result }) => {
       const color = getIndexColor(index);
       
       if (index === 'nitrogen') {
-        const amount = stats.urgentCount > 0 ? '70-100' : '40-60';
         generated.push({
           id: `nitrogen-${stats.urgentCount > 0 ? 'urgent' : 'standard'}`,
           title: 'Verify Nitrogen Stress',
-          description: `Prioritize ${stats.count} low-score areas (${coveragePercent}% of farm). If field scouting confirms N stress, use a split ${amount} kg N/ha correction.`,
+          description: `Prioritize ${stats.count} low-score areas (${coveragePercent}% of farm). Confirm with soil testing and crop-stage scouting before changing nitrogen inputs.`,
           priority: stats.urgentCount > 0 ? 'high' : 'medium',
           icon: <Leaf className="w-4 h-4" />,
           color
@@ -81,27 +80,6 @@ export const NextStepsCard: React.FC<NextStepsCardProps> = ({ result }) => {
         });
       }
       
-      if (index === 'phosphorus') {
-         generated.push({
-          id: 'phosphorus-standard',
-          title: 'Phosphorus Alignment',
-          description: `Low-confidence phosphorus signal in ${stats.count} areas. Confirm with a soil test before applying 30-50 kg P2O5/ha.`,
-          priority: 'low',
-          icon: <Leaf className="w-4 h-4" />,
-          color
-        });
-      }
-
-      if (index === 'potassium') {
-        generated.push({
-          id: `potassium-${stats.urgentCount > 0 ? 'urgent' : 'standard'}`,
-          title: 'Check Potassium Availability',
-          description: `Scout ${stats.count} potassium-stressed areas, especially where moisture stress overlaps. Consider K2O correction after soil confirmation.`,
-          priority: stats.urgentCount > 0 ? 'medium' : 'low',
-          icon: <Leaf className="w-4 h-4" />,
-          color
-        });
-      }
     });
     
     // Sort by priority
@@ -110,6 +88,8 @@ export const NextStepsCard: React.FC<NextStepsCardProps> = ({ result }) => {
   }, [result]);
 
   if (!result) return null;
+
+  const advisoryItems = result.advisory ?? [];
 
   return (
     <Card>
@@ -123,28 +103,35 @@ export const NextStepsCard: React.FC<NextStepsCardProps> = ({ result }) => {
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
-        {insights.length === 0 ? (
+        {/* Low data quality banner */}
+        {result.lowDataQuality && (
+          <div className="p-3 rounded-lg border border-amber-200 bg-amber-50 text-xs text-amber-800">
+            <span className="font-semibold">Limited satellite data.</span> High cloud cover or few clear observations this period — flagging is suppressed. Results will improve once cloud-free imagery is available.
+          </div>
+        )}
+
+        {insights.length === 0 && !result.lowDataQuality ? (
           <div className="text-center p-4 bg-green-50 rounded-lg border border-green-100">
-             <p className="text-sm text-green-700 font-medium">Your farm is healthy!</p>
+             <p className="text-sm text-green-700 font-medium">No critical issues detected.</p>
              <p className="text-xs text-green-600 mt-1">Keep up your current management routine.</p>
           </div>
         ) : (
           <div className="space-y-3">
             {insights.map((insight) => (
-              <div 
-                key={insight.id} 
+              <div
+                key={insight.id}
                 className={`p-3 rounded-lg border relative overflow-hidden`}
-                style={{ 
+                style={{
                   borderColor: insight.priority === 'high' ? `${insight.color}50` : 'var(--border)',
-                  backgroundColor: insight.priority === 'high' ? `${insight.color}05` : 'transparent' 
+                  backgroundColor: insight.priority === 'high' ? `${insight.color}05` : 'transparent'
                 }}
               >
                 {/* Visual indicator bar */}
-                <div 
-                  className="absolute left-0 top-0 bottom-0 w-1" 
+                <div
+                  className="absolute left-0 top-0 bottom-0 w-1"
                   style={{ backgroundColor: insight.color }}
                 />
-                
+
                 <div className="pl-2">
                   <div className="flex items-center justify-between mb-1">
                     <div className="flex items-center gap-1.5 font-medium text-sm">
@@ -160,14 +147,39 @@ export const NextStepsCard: React.FC<NextStepsCardProps> = ({ result }) => {
                   <p className="text-xs text-muted-foreground leading-relaxed">
                     {insight.description}
                   </p>
-                  
-                  {/* Action button (placeholder for actual functionality like creating a task) */}
+
                   <Button variant="ghost" size="sm" className="h-6 px-2 mt-2 text-xs -ml-2 text-muted-foreground hover:text-primary">
                     View Areas <ChevronRight className="w-3 h-3 ml-1" />
                   </Button>
                 </div>
               </div>
             ))}
+          </div>
+        )}
+
+        {/* Advisory / soil-test section — P, K, pH, salinity */}
+        {advisoryItems.length > 0 && (
+          <div className="mt-2 p-3 rounded-lg border border-dashed border-muted-foreground/30 bg-muted/20">
+            <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground mb-2">
+              <FlaskConical className="w-3.5 h-3.5" />
+              Soil test recommended for accurate readings
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {advisoryItems.map(item => (
+                <span
+                  key={item.index}
+                  className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full border"
+                  style={{ borderColor: `${item.color}50`, color: item.color, backgroundColor: `${item.color}08` }}
+                >
+                  <span className="w-1.5 h-1.5 rounded-full inline-block" style={{ backgroundColor: item.color }} />
+                  {item.label}: {item.value.toFixed(item.index === 'ph' ? 1 : 0)}
+                  <span className="text-muted-foreground ml-0.5">({item.confidence})</span>
+                </span>
+              ))}
+            </div>
+            <p className="text-[10px] text-muted-foreground mt-1.5 leading-relaxed">
+              Phosphorus, Potassium, pH and Salinity have low satellite retrievability. These values are context only — confirm with a lab or rapid soil test before applying inputs.
+            </p>
           </div>
         )}
       </CardContent>

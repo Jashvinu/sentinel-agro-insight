@@ -229,9 +229,10 @@ function evaluate(obj: any): Promise<any> {
 // ============================================================================
 
 // Diagnostic indices to analyze
-const DIAGNOSTIC_INDICES = ['nitrogen', 'phosphorus', 'potassium', 'moisture', 'ndvi'];
+const DIAGNOSTIC_INDICES = ['nitrogen', 'phosphorus', 'potassium', 'moisture', 'ndvi', 'ph', 'salinity'];
 
 type DiagnosticConfidence = 'high' | 'medium' | 'low';
+type DiagnosticCropProfile = 'rice' | 'millet' | 'generic';
 
 const INDEX_CONFIDENCE: Record<string, DiagnosticConfidence> = {
   nitrogen: 'high',
@@ -239,60 +240,110 @@ const INDEX_CONFIDENCE: Record<string, DiagnosticConfidence> = {
   potassium: 'medium',
   moisture: 'medium',
   ndvi: 'high',
+  ph: 'low',
+  salinity: 'low',
 };
 
-const NUTRIENT_MODEL_VERSION = 'npk-sufficiency-v2';
+const NUTRIENT_MODEL_VERSION = 'npk-soil-crop-threshold-v3';
 const NUTRIENT_MODEL_REFERENCES = [
   'Dianati et al. 2025, Scientific Reports, doi:10.1038/s41598-025-25034-z',
   'Li et al. 2023, Science of The Total Environment, doi:10.1016/j.scitotenv.2023.161421',
   'Zhang et al. 2025, Plant Methods, doi:10.1186/s13007-025-01389-2',
 ];
 
-// Season-aware thresholds for problem detection
-// Adjusted for crop phenology: dormant winter fields should not trigger alerts
-type Season = 'winter' | 'spring' | 'summer' | 'fall';
+// ---------------------------------------------------------------------------
+// Stage × crop thresholds (phenology-aware, mirrors src/services/diagnosticService.ts)
+// ---------------------------------------------------------------------------
+import { GrowthStage, deriveGrowthStage, parseCropFamily } from '../_shared/phenology.ts';
 
-function getCurrentSeason(): Season {
-  const month = new Date().getMonth();
-  if (month >= 2 && month <= 4) return 'spring';
-  if (month >= 5 && month <= 7) return 'summer';
-  if (month >= 8 && month <= 10) return 'fall';
-  return 'winter';
+interface DiagnosticThreshold {
+  low?: number;
+  warning?: number;
+  high?: number;
+  warningHigh?: number;
 }
 
-const SEASONAL_THRESHOLDS: Record<Season, Record<string, { low: number; warning: number }>> = {
-  winter: {
-    nitrogen: { low: 35, warning: 50 },
-    phosphorus: { low: 30, warning: 45 },
-    potassium: { low: 35, warning: 50 },
-    moisture: { low: 2, warning: 5 },
-    ndvi: { low: 0.02, warning: 0.05 },      // MSAVI2 - bare soil/dormant
+type StageThresholds = Record<GrowthStage, Record<string, DiagnosticThreshold>>;
+
+const basePhSalinityEdge = {
+  ph: { low: 5.5, warning: 6.0, high: 8.0, warningHigh: 7.6 },
+  salinity: { high: 4.0, warningHigh: 3.0 },
+};
+
+const STAGE_THRESHOLDS_EDGE: Record<DiagnosticCropProfile, StageThresholds> = {
+  rice: {
+    pre_emergence: { nitrogen: { low: 0, warning: 10 }, phosphorus: { low: 0, warning: 10 }, potassium: { low: 0, warning: 10 }, moisture: { low: 2, warning: 5 }, ndvi: { low: 0, warning: 0.03 }, ...basePhSalinityEdge, salinity: { high: 3.0, warningHigh: 2.0 } },
+    seedling:      { nitrogen: { low: 25, warning: 40 }, phosphorus: { low: 20, warning: 35 }, potassium: { low: 20, warning: 38 }, moisture: { low: 5, warning: 10 }, ndvi: { low: 0.04, warning: 0.08 }, ...basePhSalinityEdge, salinity: { high: 3.0, warningHigh: 2.0 } },
+    tillering:     { nitrogen: { low: 40, warning: 56 }, phosphorus: { low: 30, warning: 45 }, potassium: { low: 35, warning: 50 }, moisture: { low: 8, warning: 13 }, ndvi: { low: 0.12, warning: 0.20 }, ...basePhSalinityEdge, salinity: { high: 3.0, warningHigh: 2.0 } },
+    panicle_initiation: { nitrogen: { low: 45, warning: 62 }, phosphorus: { low: 32, warning: 48 }, potassium: { low: 38, warning: 55 }, moisture: { low: 10, warning: 15 }, ndvi: { low: 0.28, warning: 0.38 }, ...basePhSalinityEdge, salinity: { high: 3.0, warningHigh: 2.0 } },
+    heading:       { nitrogen: { low: 42, warning: 58 }, phosphorus: { low: 28, warning: 42 }, potassium: { low: 35, warning: 52 }, moisture: { low: 9, warning: 14 }, ndvi: { low: 0.32, warning: 0.42 }, ...basePhSalinityEdge, salinity: { high: 3.0, warningHigh: 2.0 } },
+    grain_fill:    { nitrogen: { low: 35, warning: 50 }, phosphorus: { low: 25, warning: 40 }, potassium: { low: 30, warning: 48 }, moisture: { low: 7, warning: 12 }, ndvi: { low: 0.22, warning: 0.32 }, ...basePhSalinityEdge, salinity: { high: 3.0, warningHigh: 2.0 } },
+    maturity:      { nitrogen: { low: 20, warning: 35 }, phosphorus: { low: 15, warning: 30 }, potassium: { low: 20, warning: 38 }, moisture: { low: 3, warning: 6 }, ndvi: { low: 0.05, warning: 0.12 }, ...basePhSalinityEdge, salinity: { high: 3.0, warningHigh: 2.0 } },
   },
-  spring: {
-    nitrogen: { low: 45, warning: 60 },
-    phosphorus: { low: 35, warning: 50 },
-    potassium: { low: 40, warning: 58 },
-    moisture: { low: 6, warning: 10 },
-    ndvi: { low: 0.08, warning: 0.15 },      // MSAVI2 - early growth
+  millet: {
+    pre_emergence: { nitrogen: { low: 0, warning: 10 }, phosphorus: { low: 0, warning: 10 }, potassium: { low: 0, warning: 10 }, moisture: { low: 1, warning: 4 }, ndvi: { low: 0, warning: 0.03 }, ...basePhSalinityEdge },
+    seedling:      { nitrogen: { low: 20, warning: 36 }, phosphorus: { low: 18, warning: 32 }, potassium: { low: 18, warning: 35 }, moisture: { low: 3, warning: 7 }, ndvi: { low: 0.04, warning: 0.08 }, ...basePhSalinityEdge },
+    tillering:     { nitrogen: { low: 35, warning: 50 }, phosphorus: { low: 25, warning: 40 }, potassium: { low: 30, warning: 45 }, moisture: { low: 4, warning: 8 }, ndvi: { low: 0.10, warning: 0.18 }, ph: { low: 5.5, warning: 6.0, high: 8.2, warningHigh: 7.8 }, salinity: { high: 4.0, warningHigh: 3.0 } },
+    panicle_initiation: { nitrogen: { low: 38, warning: 54 }, phosphorus: { low: 28, warning: 42 }, potassium: { low: 32, warning: 48 }, moisture: { low: 5, warning: 9 }, ndvi: { low: 0.22, warning: 0.32 }, ph: { low: 5.5, warning: 6.0, high: 8.2, warningHigh: 7.8 }, salinity: { high: 4.0, warningHigh: 3.0 } },
+    heading:       { nitrogen: { low: 35, warning: 50 }, phosphorus: { low: 25, warning: 40 }, potassium: { low: 30, warning: 45 }, moisture: { low: 4, warning: 8 }, ndvi: { low: 0.26, warning: 0.36 }, ph: { low: 5.5, warning: 6.0, high: 8.2, warningHigh: 7.8 }, salinity: { high: 4.0, warningHigh: 3.0 } },
+    grain_fill:    { nitrogen: { low: 25, warning: 40 }, phosphorus: { low: 20, warning: 35 }, potassium: { low: 25, warning: 40 }, moisture: { low: 3, warning: 7 }, ndvi: { low: 0.16, warning: 0.26 }, ph: { low: 5.5, warning: 6.0, high: 8.2, warningHigh: 7.8 }, salinity: { high: 4.0, warningHigh: 3.0 } },
+    maturity:      { nitrogen: { low: 15, warning: 28 }, phosphorus: { low: 12, warning: 25 }, potassium: { low: 15, warning: 30 }, moisture: { low: 2, warning: 5 }, ndvi: { low: 0.04, warning: 0.10 }, ph: { low: 5.5, warning: 6.0, high: 8.2, warningHigh: 7.8 }, salinity: { high: 4.0, warningHigh: 3.0 } },
   },
-  summer: {
-    nitrogen: { low: 50, warning: 65 },
-    phosphorus: { low: 35, warning: 52 },
-    potassium: { low: 45, warning: 62 },
-    moisture: { low: 8, warning: 14 },
-    ndvi: { low: 0.12, warning: 0.20 },      // MSAVI2 - peak canopy
-  },
-  fall: {
-    nitrogen: { low: 40, warning: 55 },
-    phosphorus: { low: 32, warning: 48 },
-    potassium: { low: 38, warning: 55 },
-    moisture: { low: 5, warning: 9 },
-    ndvi: { low: 0.06, warning: 0.12 },      // MSAVI2 - senescence
+  generic: {
+    pre_emergence: { nitrogen: { low: 0, warning: 10 }, phosphorus: { low: 0, warning: 10 }, potassium: { low: 0, warning: 10 }, moisture: { low: 1, warning: 4 }, ndvi: { low: 0, warning: 0.03 }, ...basePhSalinityEdge },
+    seedling:      { nitrogen: { low: 22, warning: 38 }, phosphorus: { low: 18, warning: 32 }, potassium: { low: 18, warning: 35 }, moisture: { low: 3, warning: 7 }, ndvi: { low: 0.04, warning: 0.08 }, ...basePhSalinityEdge },
+    tillering:     { nitrogen: { low: 38, warning: 52 }, phosphorus: { low: 28, warning: 42 }, potassium: { low: 32, warning: 48 }, moisture: { low: 5, warning: 10 }, ndvi: { low: 0.10, warning: 0.18 }, ...basePhSalinityEdge },
+    panicle_initiation: { nitrogen: { low: 42, warning: 58 }, phosphorus: { low: 30, warning: 46 }, potassium: { low: 35, warning: 52 }, moisture: { low: 7, warning: 12 }, ndvi: { low: 0.24, warning: 0.34 }, ...basePhSalinityEdge },
+    heading:       { nitrogen: { low: 40, warning: 55 }, phosphorus: { low: 28, warning: 42 }, potassium: { low: 32, warning: 50 }, moisture: { low: 6, warning: 11 }, ndvi: { low: 0.28, warning: 0.38 }, ...basePhSalinityEdge },
+    grain_fill:    { nitrogen: { low: 30, warning: 45 }, phosphorus: { low: 22, warning: 38 }, potassium: { low: 28, warning: 44 }, moisture: { low: 5, warning: 9 }, ndvi: { low: 0.18, warning: 0.28 }, ...basePhSalinityEdge },
+    maturity:      { nitrogen: { low: 18, warning: 30 }, phosphorus: { low: 12, warning: 25 }, potassium: { low: 16, warning: 32 }, moisture: { low: 2, warning: 5 }, ndvi: { low: 0.04, warning: 0.10 }, ...basePhSalinityEdge },
   },
 };
 
-function getSeasonalThresholds(): Record<string, { low: number; warning: number }> {
-  return SEASONAL_THRESHOLDS[getCurrentSeason()];
+function normalizeDiagnosticCrop(value?: string | null): DiagnosticCropProfile {
+  const crop = String(value || '').trim().toLowerCase();
+  if (['rice', 'paddy', 'paddy rice'].includes(crop)) return 'rice';
+  if (['millet', 'jowar', 'sorghum', 'bajra', 'pearl millet', 'ragi', 'finger millet'].includes(crop)) return 'millet';
+  return 'generic';
+}
+
+function getStageThresholdsEdge(crop: DiagnosticCropProfile = 'generic', stage: GrowthStage = 'tillering'): Record<string, DiagnosticThreshold> {
+  return STAGE_THRESHOLDS_EDGE[crop]?.[stage] ?? STAGE_THRESHOLDS_EDGE.generic[stage] ?? STAGE_THRESHOLDS_EDGE.generic.tillering;
+}
+
+// Alias for callers that don't have a stage yet
+function getSeasonalThresholds(crop: DiagnosticCropProfile = 'generic', stage: GrowthStage = 'tillering'): Record<string, DiagnosticThreshold> {
+  return getStageThresholdsEdge(crop, stage);
+}
+
+function evaluateThresholdIssue(
+  value: number,
+  thresholds: DiagnosticThreshold
+): { isCritical: boolean; isWarning: boolean; direction: 'low' | 'high'; threshold: number } {
+  const lowThreshold = thresholds.low;
+  const warningLow = thresholds.warning ?? lowThreshold;
+  const highThreshold = thresholds.high;
+  const warningHigh = thresholds.warningHigh ?? highThreshold;
+  const lowCritical = lowThreshold !== undefined && value < lowThreshold;
+  const highCritical = highThreshold !== undefined && value > highThreshold;
+  const lowWarning = warningLow !== undefined && value < warningLow;
+  const highWarning = warningHigh !== undefined && value > warningHigh;
+
+  if (highCritical || (!lowCritical && highWarning)) {
+    return {
+      isCritical: highCritical,
+      isWarning: highWarning,
+      direction: 'high',
+      threshold: highThreshold ?? warningHigh ?? value,
+    };
+  }
+
+  return {
+    isCritical: lowCritical,
+    isWarning: lowWarning,
+    direction: 'low',
+    threshold: lowThreshold ?? warningLow ?? value,
+  };
 }
 
 // Trend detection threshold
@@ -348,7 +399,7 @@ const INDEX_CALCULATORS: Record<string, (image: any) => any> = {
     return image.expression(
       '(2 * NIR + 1 - sqrt(pow(2 * NIR + 1, 2) - 8 * (NIR - RED))) / 2',
       { NIR: nir, RED: red }
-    ).rename('ndvi');
+    ).clamp(0, 1).rename('ndvi'); // clamp: bare-soil/cloud collapse to 0, never negative
   },
   nitrogen: (image: any) => {
     const f = calculateSpectralFeatures(image);
@@ -365,8 +416,8 @@ const INDEX_CALCULATORS: Record<string, (image: any) => any> = {
     const nir = image.select('B8');
     const swir = image.select('B11');
     const ndmi = nir.subtract(swir).divide(nir.add(swir));
-    // Moisture % = 45.2 × NDMI - 8.7
-    return ndmi.multiply(45.2).subtract(8.7).rename('moisture');
+    // Moisture % = 45.2 × NDMI - 8.7, clamped to [0, 100] (dry soil yields negative raw values)
+    return ndmi.multiply(45.2).subtract(8.7).clamp(0, 100).rename('moisture');
   },
   phosphorus: (image: any) => {
     const f = calculateSpectralFeatures(image);
@@ -390,6 +441,17 @@ const INDEX_CALCULATORS: Record<string, (image: any) => any> = {
       { image: scoreFromRange(f.gndvi, -0.05, 0.72), weight: 0.18 },
     ], 'potassium');
   },
+  ph: (image: any) => {
+    const blue = image.select('B2');
+    const swir = image.select('B11');
+    return blue.multiply(0.023).subtract(swir.multiply(0.015)).add(7.2).rename('ph');
+  },
+  salinity: (image: any) => {
+    const blue = image.select('B2');
+    const red = image.select('B4');
+    const si = blue.add(red).divide(2);
+    return si.multiply(0.0045).add(1.2).rename('salinity');
+  },
 };
 
 // Color palettes for visualization
@@ -399,6 +461,8 @@ const INDEX_PALETTES: Record<string, string[]> = {
   moisture: ['#92400e', '#eab308', '#93c5fd', '#3b82f6', '#1e40af'],
   phosphorus: ['#ef4444', '#f97316', '#eab308', '#22c55e', '#15803d'],
   potassium: ['#ef4444', '#f97316', '#eab308', '#22c55e', '#15803d'],
+  ph: ['#dc2626', '#f97316', '#fbbf24', '#a3e635', '#22c55e', '#3b82f6', '#1e40af'],
+  salinity: ['#15803d', '#22c55e', '#a3e635', '#fbbf24', '#f97316', '#dc2626', '#7f1d1d'],
 };
 
 // Value ranges for visualization
@@ -408,6 +472,8 @@ const INDEX_RANGES: Record<string, { min: number; max: number }> = {
   moisture: { min: 0, max: 50 },
   phosphorus: { min: 0, max: 100 },
   potassium: { min: 0, max: 100 },
+  ph: { min: 5, max: 9 },
+  salinity: { min: 0, max: 6 },
 };
 
 interface PrecomputedImages {
@@ -466,6 +532,10 @@ async function checkDiagnosticsCache(farmId: string): Promise<any | null> {
     .single();
   if (error || !data) return null;
   return data;
+}
+
+function isUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
 function getThumbUrl(image: any, params: any): Promise<string> {
@@ -551,10 +621,10 @@ async function upsertDiagnosticsCache(farmId: string, payload: {
     }, { onConflict: 'farm_id' });
 
   if (error) {
-    console.warn('[Diagnostics] Cache upsert failed:', error);
-  } else {
-    console.log('[Diagnostics] Cache upserted successfully');
+    throw new Error(`Diagnostics cache upsert failed: ${error.message}`);
   }
+
+  console.log('[Diagnostics] Cache upserted successfully');
 }
 
 // ============================================================================
@@ -610,7 +680,9 @@ async function processIndex(
   index: string,
   precomputed: PrecomputedImages,
   eeGeometry: any,
-  timings: Record<string, number>
+  timings: Record<string, number>,
+  cropProfile: DiagnosticCropProfile,
+  stage: GrowthStage = 'tillering'
 ): Promise<{
   index: string;
   result: any;
@@ -716,24 +788,26 @@ async function processIndex(
   const max = stats[`${index}_max`] || stats['max'] || 0;
   const stdDev = stats[`${index}_stdDev`] || stats['stdDev'] || 0;
 
-  const threshold = getSeasonalThresholds()[index];
-  // Only flag critical threshold violations (below 'low', not 'warning')
-  const belowThreshold = mean < threshold.low;
+  const threshold = getSeasonalThresholds(cropProfile, stage)[index];
+  const thresholdIssue = evaluateThresholdIssue(mean, threshold);
+  // Only flag critical threshold violations, not warning-only values.
+  const belowThreshold = thresholdIssue.isCritical;
 
   let trend = 0;
   let trendDetected = false;
   const trendUnit = NUTRIENT_INDICES.has(index) ? 'points' : 'percent';
 
-  if (firstStatsResult && lastStatsResult) {
+  if (firstStatsResult && lastStatsResult && ['nitrogen', 'phosphorus', 'potassium', 'moisture', 'ndvi'].includes(index)) {
     const firstMean = firstStatsResult[index] || firstStatsResult['mean'] || 0;
     const lastMean = lastStatsResult[index] || lastStatsResult['mean'] || 0;
+    const lastIssue = evaluateThresholdIssue(lastMean, threshold);
 
     if (trendUnit === 'points') {
       trend = lastMean - firstMean;
-      trendDetected = trend < NUTRIENT_TREND_THRESHOLD_POINTS && lastMean < threshold.warning;
+      trendDetected = trend < NUTRIENT_TREND_THRESHOLD_POINTS && lastIssue.isWarning;
     } else if (firstMean !== 0) {
       trend = ((lastMean - firstMean) / firstMean) * 100;
-      trendDetected = trend < TREND_THRESHOLD_PERCENT && lastMean < threshold.warning;
+      trendDetected = trend < TREND_THRESHOLD_PERCENT && lastIssue.isWarning;
     }
   }
 
@@ -749,6 +823,7 @@ async function processIndex(
     trend,
     trendUnit,
     trendDetected,
+    thresholdDirection: thresholdIssue.direction,
     confidence: INDEX_CONFIDENCE[index] || 'medium',
     modelVersion: ['nitrogen', 'phosphorus', 'potassium'].includes(index)
       ? NUTRIENT_MODEL_VERSION
@@ -767,7 +842,8 @@ async function processIndex(
       avgValue: mean,
       avgDecline: trendDetected ? trend : null,
       trendUnit,
-      threshold: threshold.low,
+      threshold: thresholdIssue.threshold,
+      thresholdDirection: thresholdIssue.direction,
       confidence: INDEX_CONFIDENCE[index] || 'medium',
     };
   }
@@ -789,13 +865,24 @@ Deno.serve(async (req) => {
   try {
     const url = new URL(req.url);
     const polygonParam = url.searchParams.get('polygon');
-    const farmId = url.searchParams.get('farm_id') || null;
+    const farmId = url.searchParams.get('farm_id') || '';
     const indicesParam = url.searchParams.get('indices') || DIAGNOSTIC_INDICES.join(',');
+    const cropProfile = normalizeDiagnosticCrop(url.searchParams.get('crop') || 'rice');
+    const sowingDateParam = url.searchParams.get('sowing_date') || undefined;
     const numDays = parseInt(url.searchParams.get('days') || '14');
     const maxCloudCover = parseInt(url.searchParams.get('cloud') || '50');
 
+    // Derive growth stage from sowing date for phenology-aware thresholds
+    const cropFamily = parseCropFamily(cropProfile);
+    const phenology = sowingDateParam ? deriveGrowthStage(sowingDateParam, cropFamily) : null;
+    const currentStage: GrowthStage = phenology?.stage ?? 'tillering';
+
     if (!polygonParam) {
       return errorResponse('polygon parameter is required', 400);
+    }
+
+    if (!farmId || !isUuid(farmId)) {
+      return errorResponse('farm_id must be a Supabase farm UUID', 400);
     }
 
     let geometry: any;
@@ -805,37 +892,40 @@ Deno.serve(async (req) => {
       return errorResponse('Invalid polygon JSON', 400);
     }
 
-    // Check cache first (skip GEE if valid cache exists)
-    if (farmId) {
-      const cached = await checkDiagnosticsCache(farmId);
-      if (cached) {
-        const summary = cached.analysis_summary || {};
-        const cachedMetadata = summary.metadata || {};
-        const cachedIndices = cached.indices || [];
-        const cacheHasCurrentModel =
-          cachedMetadata.nutrientModel?.version === NUTRIENT_MODEL_VERSION &&
-          cachedIndices.includes('potassium') &&
-          cachedMetadata.maxCloudCover === maxCloudCover;
+    const cached = await checkDiagnosticsCache(farmId);
+    if (cached) {
+      const summary = cached.analysis_summary || {};
+      const cachedMetadata = summary.metadata || {};
+      const cachedIndices = cached.indices || [];
+      const cachedCells = cached.cell_stats || [];
+      const cacheHasCurrentModel =
+        cachedMetadata.nutrientModel?.version === NUTRIENT_MODEL_VERSION &&
+        cachedMetadata.cropProfile === cropProfile &&
+        cachedIndices.includes('ph') &&
+        cachedIndices.includes('salinity') &&
+        cachedIndices.includes('potassium') &&
+        cachedMetadata.maxCloudCover === maxCloudCover &&
+        Array.isArray(cachedCells) &&
+        cachedCells.length > 0;
 
-        if (cacheHasCurrentModel) {
-          console.log('[Diagnostics] Cache hit for farm:', farmId);
-          return successResponse({
-            cached: true,
-            analysis: summary.analysis || {},
-            problems: summary.problems || [],
-            cellData: cached.cell_stats || [],
-            cell_stats: cached.cell_stats || [],
-            raster_urls: cached.raster_urls || {},
-            bounds: cached.bounds || [[0, 0], [0, 0]],
-            expires_at: cached.expires_at,
-            metadata: cachedMetadata,
-          });
-        }
-
-        console.log('[Diagnostics] Cache stale for farm:', farmId, '— nutrient model changed');
+      if (cacheHasCurrentModel) {
+        console.log('[Diagnostics] Cache hit for farm:', farmId);
+        return successResponse({
+          cached: true,
+          analysis: summary.analysis || {},
+          problems: summary.problems || [],
+          cellData: cachedCells,
+          cell_stats: cachedCells,
+          raster_urls: cached.raster_urls || {},
+          bounds: cached.bounds || [[0, 0], [0, 0]],
+          expires_at: cached.expires_at,
+          metadata: cachedMetadata,
+        });
       }
-      console.log('[Diagnostics] Cache miss for farm:', farmId, '— running GEE analysis');
+
+      console.log('[Diagnostics] Cache stale for farm:', farmId, '— model, crop profile, cloud filter, or samples changed');
     }
+    console.log('[Diagnostics] Cache miss for farm:', farmId, '— running GEE analysis');
 
     let serviceAccountKey: any;
     const googleCredsJson = Deno.env.get('GOOGLE_CREDENTIALS_JSON');
@@ -877,7 +967,7 @@ Deno.serve(async (req) => {
 
     const indices = indicesParam.split(',').filter(i => DIAGNOSTIC_INDICES.includes(i));
     const season = getCurrentSeason();
-    console.log(`[Diagnostics] Season: ${season}, Processing indices: ${indices.join(', ')}`);
+    console.log(`[Diagnostics] Season: ${season}, Crop profile: ${cropProfile}, Processing indices: ${indices.join(', ')}`);
 
     const endDate = new Date().toISOString().split('T')[0];
     const startDate = new Date(Date.now() - numDays * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
@@ -919,7 +1009,7 @@ Deno.serve(async (req) => {
     console.log(`[Diagnostics] Starting parallel processing of ${indices.length} indices...`);
 
     const results = await Promise.all(
-      indices.map(index => processIndex(index, precomputed, eeGeometry, timings))
+      indices.map(index => processIndex(index, precomputed, eeGeometry, timings, cropProfile, currentStage))
     );
 
     console.log(`[Diagnostics] Parallel processing complete: ${Date.now() - parallelStart}ms`);
@@ -945,74 +1035,75 @@ Deno.serve(async (req) => {
       potassium: number | null;
       moisture: number | null;
       ndvi: number | null;
+      ph: number | null;
+      salinity: number | null;
     }> = [];
-    try {
-      const samplingStart = Date.now();
-      console.log('[Diagnostics] Starting pixel sampling...');
+    const samplingStart = Date.now();
+    console.log('[Diagnostics] Starting pixel sampling...');
 
-      // Build a stacked multi-band image with all indices
-      const indexBands = indices.map(index => INDEX_CALCULATORS[index](precomputed.composite));
-      let stackedImage = indexBands[0];
-      for (let i = 1; i < indexBands.length; i++) {
-        stackedImage = stackedImage.addBands(indexBands[i]);
-      }
-
-      // Sample at 30m resolution (~1000 points for 85ha)
-      const samples = stackedImage.sample({
-        region: eeGeometry,
-        scale: 30,
-        geometries: true,
-        seed: 42,
-      });
-
-      const samplesResult = await evaluate(samples);
-      const features = samplesResult?.features || [];
-      console.log(`[Diagnostics] Sampled ${features.length} points in ${Date.now() - samplingStart}ms`);
-
-      cellData = features.map((f: any) => {
-        const coords = f.geometry?.coordinates || [0, 0];
-        const props = f.properties || {};
-        return {
-          lng: coords[0],
-          lat: coords[1],
-          nitrogen: props.nitrogen ?? null,
-          phosphorus: props.phosphorus ?? null,
-          potassium: props.potassium ?? null,
-          moisture: props.moisture ?? null,
-          ndvi: props.ndvi ?? null,
-        };
-      });
-
-      timings['pixelSampling'] = Date.now() - samplingStart;
-    } catch (samplingError: any) {
-      console.warn('[Diagnostics] Pixel sampling failed (falling back to random placement):', samplingError?.message || samplingError);
-      cellData = [];
+    // Build a stacked multi-band image with all indices
+    const indexBands = indices.map(index => INDEX_CALCULATORS[index](precomputed.composite));
+    let stackedImage = indexBands[0];
+    for (let i = 1; i < indexBands.length; i++) {
+      stackedImage = stackedImage.addBands(indexBands[i]);
     }
+
+    // Sample at 30m resolution (~1000 points for 85ha)
+    const samples = stackedImage.sample({
+      region: eeGeometry,
+      scale: 30,
+      geometries: true,
+      seed: 42,
+    });
+
+    const samplesResult = await evaluate(samples);
+    const features = samplesResult?.features || [];
+    console.log(`[Diagnostics] Sampled ${features.length} points in ${Date.now() - samplingStart}ms`);
+
+    if (features.length === 0) {
+      throw new Error('Pixel sampling returned zero cell-level satellite samples.');
+    }
+
+    cellData = features.map((f: any) => {
+      const coords = f.geometry?.coordinates || [0, 0];
+      const props = f.properties || {};
+      return {
+        lng: coords[0],
+        lat: coords[1],
+        nitrogen: props.nitrogen ?? null,
+        phosphorus: props.phosphorus ?? null,
+        potassium: props.potassium ?? null,
+        moisture: props.moisture ?? null,
+        ndvi: props.ndvi ?? null,
+        ph: props.ph ?? null,
+        salinity: props.salinity ?? null,
+      };
+    });
+
+    timings['pixelSampling'] = Date.now() - samplingStart;
 
     // --- Raster generation: render + upload PNGs to Supabase Storage ---
     const rasterUrls: Record<string, string> = {};
     const bounds = computeBounds(geometry);
 
-    if (farmId) {
-      const rasterStart = Date.now();
-      console.log('[Diagnostics] Generating raster images...');
-      const timestamp = Date.now();
+    const rasterStart = Date.now();
+    console.log('[Diagnostics] Generating raster images...');
+    const timestamp = Date.now();
 
-      const rasterResults = await Promise.all(
-        indices.map(async (index) => {
-          const clippedImage = INDEX_CALCULATORS[index](precomputed.composite).clip(eeGeometry);
-          const publicUrl = await generateAndUploadRaster(index, clippedImage, farmId, timestamp);
-          return { index, publicUrl };
-        })
-      );
+    const rasterResults = await Promise.all(
+      indices.map(async (index) => {
+        const clippedImage = INDEX_CALCULATORS[index](precomputed.composite).clip(eeGeometry);
+        const publicUrl = await generateAndUploadRaster(index, clippedImage, farmId, timestamp);
+        return { index, publicUrl };
+      })
+    );
 
-      rasterResults.forEach(({ index, publicUrl }) => {
-        if (publicUrl) rasterUrls[index] = publicUrl;
-      });
+    rasterResults.forEach(({ index, publicUrl }) => {
+      if (publicUrl) rasterUrls[index] = publicUrl;
+    });
 
-      timings['rasterGeneration'] = Date.now() - rasterStart;
-      console.log(`[Diagnostics] Raster generation: ${timings['rasterGeneration']}ms (${Object.keys(rasterUrls).length}/${indices.length} uploaded)`);
-    }
+    timings['rasterGeneration'] = Date.now() - rasterStart;
+    console.log(`[Diagnostics] Raster generation: ${timings['rasterGeneration']}ms (${Object.keys(rasterUrls).length}/${indices.length} uploaded)`);
 
     const totalTime = Date.now() - requestStart;
     console.log('[Diagnostics] === TIMING SUMMARY ===');
@@ -1038,6 +1129,11 @@ Deno.serve(async (req) => {
       resolution: '10m',
       indices,
       season,
+      cropProfile,
+      growthStage: currentStage,
+      growthStageName: phenology?.stageName ?? currentStage,
+      sowingDate: phenology?.sowingDate,
+      cropThresholds: getSeasonalThresholds(cropProfile, currentStage),
       processingTimeMs: totalTime,
       trendMethod: firstWindowCount > 0 && lastWindowCount > 0
         ? 'first-half median vs second-half median'
@@ -1050,21 +1146,18 @@ Deno.serve(async (req) => {
       },
     };
 
-    // Persist to cache (non-blocking — don't await to avoid delaying response)
-    if (farmId) {
-      upsertDiagnosticsCache(farmId, {
-        rasterUrls,
-        bounds,
-        cellData,
-        analysis: analysisResults,
-        problems,
-        metadata,
-        season,
-        indices,
-        startDate,
-        endDate,
-      }).catch((e) => console.warn('[Diagnostics] Background cache upsert error:', e));
-    }
+    await upsertDiagnosticsCache(farmId, {
+      rasterUrls,
+      bounds,
+      cellData,
+      analysis: analysisResults,
+      problems,
+      metadata,
+      season,
+      indices,
+      startDate,
+      endDate,
+    });
 
     return successResponse({
       cached: false,

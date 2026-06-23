@@ -8,11 +8,14 @@ import { buildApiUrl, getSupabaseFunctionHeaders } from './api';
 import { API_ENDPOINTS } from '@/constants';
 import * as turf from '@turf/turf';
 import type { MultiPolygon, Polygon } from 'geojson';
+import { GrowthStage, deriveGrowthStage, parseCropFamily, STAGE_LABELS } from './phenology';
 
 // Types
-export type DiagnosticIndex = 'nitrogen' | 'phosphorus' | 'potassium' | 'moisture' | 'ndvi';
+export type DiagnosticIndex = 'nitrogen' | 'phosphorus' | 'potassium' | 'moisture' | 'ndvi' | 'ph' | 'salinity';
 export type DiagnosticConfidence = 'high' | 'medium' | 'low';
 export type DiagnosticTrendUnit = 'percent' | 'points';
+export type DiagnosticCropProfile = 'rice' | 'millet' | 'generic';
+export type ThresholdDirection = 'low' | 'high';
 type FarmGeometry = Polygon | MultiPolygon;
 
 export interface SamplePoint {
@@ -23,6 +26,8 @@ export interface SamplePoint {
   potassium: number | null;
   moisture: number | null;
   ndvi: number | null;
+  ph: number | null;
+  salinity: number | null;
 }
 
 export interface CellProblem {
@@ -31,6 +36,7 @@ export interface CellProblem {
   currentValue: number;
   previousValue?: number;
   threshold: number;
+  direction?: ThresholdDirection;
   changePercent?: number;
   changeUnit?: DiagnosticTrendUnit;
   confidence?: DiagnosticConfidence;
@@ -59,9 +65,27 @@ export interface ProblemSummary {
   label: string;
 }
 
+export interface AdvisoryIndexData {
+  index: DiagnosticIndex;
+  value: number;
+  confidence: DiagnosticConfidence;
+  label: string;
+  color: string;
+}
+
 export interface DiagnosticResult {
   cells: GridCell[];
   problems: ProblemSummary[];
+  /** Low-confidence / advisory-only indices (P, K, pH, salinity). Not flagged as problems. */
+  advisory: AdvisoryIndexData[];
+  /** True when cloud cover >60% or <2 clear observations suppressed flagging. */
+  lowDataQuality: boolean;
+  /** Derived growth stage from sowing date / phenology engine. */
+  growthStage?: GrowthStage;
+  /** Human-readable stage label. */
+  growthStageName?: string;
+  /** Sowing date used for threshold derivation (ISO). */
+  sowingDate?: string;
   analysisDate: string;
   imagesAnalyzed: number;
   cloudCover?: number;
@@ -118,8 +142,20 @@ interface AgriculturalIndexResponse {
 }
 
 // Configuration
-const DIAGNOSTIC_INDICES: DiagnosticIndex[] = ['nitrogen', 'phosphorus', 'potassium', 'moisture', 'ndvi'];
+const DIAGNOSTIC_INDICES: DiagnosticIndex[] = ['nitrogen', 'phosphorus', 'potassium', 'moisture', 'ndvi', 'ph', 'salinity'];
 const NPK_INDICES = new Set<DiagnosticIndex>(['nitrogen', 'phosphorus', 'potassium']);
+const LOW_STRESS_INDICES = new Set<DiagnosticIndex>(['nitrogen', 'phosphorus', 'potassium', 'moisture', 'ndvi']);
+
+// Indices that may raise a flagged problem (red cell / "detected issue").
+// Published evidence: only Nitrogen retrieves reliably from satellite (red-edge,
+// R²≈0.74–0.77); Phosphorus/Potassium are weak proxies and pH/salinity are
+// low-confidence — these are surfaced as advisory context, never as flagged issues.
+const FLAGGING_INDICES = new Set<DiagnosticIndex>(['nitrogen', 'ndvi', 'moisture']);
+const ADVISORY_INDICES = new Set<DiagnosticIndex>(['phosphorus', 'potassium', 'ph', 'salinity']);
+
+export function isAdvisoryIndex(index: DiagnosticIndex): boolean {
+  return ADVISORY_INDICES.has(index);
+}
 
 interface IndexAnalysis {
   threshold: boolean;
@@ -130,54 +166,188 @@ interface IndexAnalysis {
   confidence: DiagnosticConfidence;
 }
 
-// Season-aware thresholds - adjusted for crop phenology
-// Winter: dormant fields, low expectations
-// Spring: early growth, moderate expectations
-// Summer: peak growth, highest expectations
-// Fall: senescence, declining expectations
-type Season = 'winter' | 'spring' | 'summer' | 'fall';
-
-function getCurrentSeason(): Season {
-  const month = new Date().getMonth(); // 0-11
-  if (month >= 2 && month <= 4) return 'spring';
-  if (month >= 5 && month <= 7) return 'summer';
-  if (month >= 8 && month <= 10) return 'fall';
-  return 'winter';
+interface DiagnosticThreshold {
+  low?: number;
+  warning?: number;
+  high?: number;
+  warningHigh?: number;
 }
 
-const SEASONAL_THRESHOLDS: Record<Season, Record<DiagnosticIndex, { low: number; warning: number }>> = {
-  winter: {
-    nitrogen: { low: 35, warning: 50 },
-    phosphorus: { low: 30, warning: 45 },
-    potassium: { low: 35, warning: 50 },
-    moisture: { low: 2, warning: 5 },
-    ndvi: { low: 0.02, warning: 0.05 },      // MSAVI2 - bare soil/dormant
+type DiagnosticThresholds = Record<DiagnosticIndex, DiagnosticThreshold>;
+
+// ---------------------------------------------------------------------------
+// Stage × crop thresholds
+// Replaces calendar-month seasons. Thresholds key to BBCH growth stage so a
+// just-sown / bare-soil field is not penalised with peak-canopy expectations.
+//
+// NDVI (MSAVI2) ranges: pre-emergence bare soil ≈ 0–0.05; seedling ≈ 0.05–0.12;
+//   tillering ≈ 0.12–0.35; heading/grain-fill ≈ 0.35–0.60+.
+// Nitrogen (0-100 satellite sufficiency proxy): meaningful only once canopy is
+//   established (≥ seedling); pre-emergence threshold set near 0 to suppress.
+// Moisture: critical threshold rises with crop water demand; zero-indexed post-clamping.
+// pH / salinity: unchanged across stages (soil property).
+// ---------------------------------------------------------------------------
+type StageThresholds = Record<GrowthStage, DiagnosticThresholds>;
+
+const basePhSalinity: Pick<DiagnosticThresholds, 'ph' | 'salinity'> = {
+  ph: { low: 5.5, warning: 6.0, high: 8.0, warningHigh: 7.6 },
+  salinity: { high: 4.0, warningHigh: 3.0 },
+};
+
+const STAGE_THRESHOLDS: Record<DiagnosticCropProfile, StageThresholds> = {
+  rice: {
+    pre_emergence: {
+      nitrogen:   { low: 0,  warning: 10 },  // no canopy — suppress N flagging
+      phosphorus: { low: 0,  warning: 10 },
+      potassium:  { low: 0,  warning: 10 },
+      moisture:   { low: 2,  warning: 5  },   // pre-soak / puddle check
+      ndvi:       { low: 0,  warning: 0.03 }, // bare soil expected
+      ...basePhSalinity,
+    },
+    seedling: {
+      nitrogen:   { low: 25, warning: 40 },
+      phosphorus: { low: 20, warning: 35 },
+      potassium:  { low: 20, warning: 38 },
+      moisture:   { low: 5,  warning: 10 },
+      ndvi:       { low: 0.04, warning: 0.08 },
+      ...basePhSalinity,
+      salinity: { high: 3.0, warningHigh: 2.0 },
+    },
+    tillering: {
+      nitrogen:   { low: 40, warning: 56 },
+      phosphorus: { low: 30, warning: 45 },
+      potassium:  { low: 35, warning: 50 },
+      moisture:   { low: 8,  warning: 13 },
+      ndvi:       { low: 0.12, warning: 0.20 },
+      ...basePhSalinity,
+      salinity: { high: 3.0, warningHigh: 2.0 },
+    },
+    panicle_initiation: {
+      nitrogen:   { low: 45, warning: 62 },
+      phosphorus: { low: 32, warning: 48 },
+      potassium:  { low: 38, warning: 55 },
+      moisture:   { low: 10, warning: 15 },
+      ndvi:       { low: 0.28, warning: 0.38 },
+      ...basePhSalinity,
+      salinity: { high: 3.0, warningHigh: 2.0 },
+    },
+    heading: {
+      nitrogen:   { low: 42, warning: 58 },
+      phosphorus: { low: 28, warning: 42 },
+      potassium:  { low: 35, warning: 52 },
+      moisture:   { low: 9,  warning: 14 },
+      ndvi:       { low: 0.32, warning: 0.42 },
+      ...basePhSalinity,
+      salinity: { high: 3.0, warningHigh: 2.0 },
+    },
+    grain_fill: {
+      nitrogen:   { low: 35, warning: 50 },
+      phosphorus: { low: 25, warning: 40 },
+      potassium:  { low: 30, warning: 48 },
+      moisture:   { low: 7,  warning: 12 },
+      ndvi:       { low: 0.22, warning: 0.32 },
+      ...basePhSalinity,
+      salinity: { high: 3.0, warningHigh: 2.0 },
+    },
+    maturity: {
+      nitrogen:   { low: 20, warning: 35 },  // senescence — suppress
+      phosphorus: { low: 15, warning: 30 },
+      potassium:  { low: 20, warning: 38 },
+      moisture:   { low: 3,  warning: 6  },
+      ndvi:       { low: 0.05, warning: 0.12 },
+      ...basePhSalinity,
+      salinity: { high: 3.0, warningHigh: 2.0 },
+    },
   },
-  spring: {
-    nitrogen: { low: 45, warning: 60 },
-    phosphorus: { low: 35, warning: 50 },
-    potassium: { low: 40, warning: 58 },
-    moisture: { low: 6, warning: 10 },
-    ndvi: { low: 0.08, warning: 0.15 },      // MSAVI2 - early growth
+  millet: {
+    pre_emergence: {
+      nitrogen: { low: 0, warning: 10 }, phosphorus: { low: 0, warning: 10 }, potassium: { low: 0, warning: 10 },
+      moisture: { low: 1, warning: 4 }, ndvi: { low: 0, warning: 0.03 }, ...basePhSalinity,
+    },
+    seedling: {
+      nitrogen: { low: 20, warning: 36 }, phosphorus: { low: 18, warning: 32 }, potassium: { low: 18, warning: 35 },
+      moisture: { low: 3, warning: 7 }, ndvi: { low: 0.04, warning: 0.08 }, ...basePhSalinity,
+    },
+    tillering: {
+      nitrogen: { low: 35, warning: 50 }, phosphorus: { low: 25, warning: 40 }, potassium: { low: 30, warning: 45 },
+      moisture: { low: 4, warning: 8 }, ndvi: { low: 0.10, warning: 0.18 }, ...basePhSalinity,
+      ph: { low: 5.5, warning: 6.0, high: 8.2, warningHigh: 7.8 },
+    },
+    panicle_initiation: {
+      nitrogen: { low: 38, warning: 54 }, phosphorus: { low: 28, warning: 42 }, potassium: { low: 32, warning: 48 },
+      moisture: { low: 5, warning: 9 }, ndvi: { low: 0.22, warning: 0.32 }, ...basePhSalinity,
+      ph: { low: 5.5, warning: 6.0, high: 8.2, warningHigh: 7.8 },
+    },
+    heading: {
+      nitrogen: { low: 35, warning: 50 }, phosphorus: { low: 25, warning: 40 }, potassium: { low: 30, warning: 45 },
+      moisture: { low: 4, warning: 8 }, ndvi: { low: 0.26, warning: 0.36 }, ...basePhSalinity,
+      ph: { low: 5.5, warning: 6.0, high: 8.2, warningHigh: 7.8 },
+    },
+    grain_fill: {
+      nitrogen: { low: 25, warning: 40 }, phosphorus: { low: 20, warning: 35 }, potassium: { low: 25, warning: 40 },
+      moisture: { low: 3, warning: 7 }, ndvi: { low: 0.16, warning: 0.26 }, ...basePhSalinity,
+      ph: { low: 5.5, warning: 6.0, high: 8.2, warningHigh: 7.8 },
+    },
+    maturity: {
+      nitrogen: { low: 15, warning: 28 }, phosphorus: { low: 12, warning: 25 }, potassium: { low: 15, warning: 30 },
+      moisture: { low: 2, warning: 5 }, ndvi: { low: 0.04, warning: 0.10 }, ...basePhSalinity,
+      ph: { low: 5.5, warning: 6.0, high: 8.2, warningHigh: 7.8 },
+    },
   },
-  summer: {
-    nitrogen: { low: 50, warning: 65 },
-    phosphorus: { low: 35, warning: 52 },
-    potassium: { low: 45, warning: 62 },
-    moisture: { low: 8, warning: 14 },
-    ndvi: { low: 0.12, warning: 0.20 },      // MSAVI2 - peak canopy
-  },
-  fall: {
-    nitrogen: { low: 40, warning: 55 },
-    phosphorus: { low: 32, warning: 48 },
-    potassium: { low: 38, warning: 55 },
-    moisture: { low: 5, warning: 9 },
-    ndvi: { low: 0.06, warning: 0.12 },      // MSAVI2 - senescence
+  generic: {
+    pre_emergence: {
+      nitrogen: { low: 0, warning: 10 }, phosphorus: { low: 0, warning: 10 }, potassium: { low: 0, warning: 10 },
+      moisture: { low: 1, warning: 4 }, ndvi: { low: 0, warning: 0.03 }, ...basePhSalinity,
+    },
+    seedling: {
+      nitrogen: { low: 22, warning: 38 }, phosphorus: { low: 18, warning: 32 }, potassium: { low: 18, warning: 35 },
+      moisture: { low: 3, warning: 7 }, ndvi: { low: 0.04, warning: 0.08 }, ...basePhSalinity,
+    },
+    tillering: {
+      nitrogen: { low: 38, warning: 52 }, phosphorus: { low: 28, warning: 42 }, potassium: { low: 32, warning: 48 },
+      moisture: { low: 5, warning: 10 }, ndvi: { low: 0.10, warning: 0.18 }, ...basePhSalinity,
+    },
+    panicle_initiation: {
+      nitrogen: { low: 42, warning: 58 }, phosphorus: { low: 30, warning: 46 }, potassium: { low: 35, warning: 52 },
+      moisture: { low: 7, warning: 12 }, ndvi: { low: 0.24, warning: 0.34 }, ...basePhSalinity,
+    },
+    heading: {
+      nitrogen: { low: 40, warning: 55 }, phosphorus: { low: 28, warning: 42 }, potassium: { low: 32, warning: 50 },
+      moisture: { low: 6, warning: 11 }, ndvi: { low: 0.28, warning: 0.38 }, ...basePhSalinity,
+    },
+    grain_fill: {
+      nitrogen: { low: 30, warning: 45 }, phosphorus: { low: 22, warning: 38 }, potassium: { low: 28, warning: 44 },
+      moisture: { low: 5, warning: 9 }, ndvi: { low: 0.18, warning: 0.28 }, ...basePhSalinity,
+    },
+    maturity: {
+      nitrogen: { low: 18, warning: 30 }, phosphorus: { low: 12, warning: 25 }, potassium: { low: 16, warning: 32 },
+      moisture: { low: 2, warning: 5 }, ndvi: { low: 0.04, warning: 0.10 }, ...basePhSalinity,
+    },
   },
 };
 
-function getSeasonalThresholds(): Record<DiagnosticIndex, { low: number; warning: number }> {
-  return SEASONAL_THRESHOLDS[getCurrentSeason()];
+export function normalizeDiagnosticCrop(value?: string | null): DiagnosticCropProfile {
+  const crop = String(value || '').trim().toLowerCase();
+  if (['rice', 'paddy', 'paddy rice'].includes(crop)) return 'rice';
+  if (['millet', 'jowar', 'sorghum', 'bajra', 'pearl millet', 'ragi', 'finger millet'].includes(crop)) {
+    return 'millet';
+  }
+  return 'generic';
+}
+
+/**
+ * Get diagnostic thresholds for the current crop growth stage.
+ * @param crop       Crop profile
+ * @param stage      GrowthStage from phenology engine (falls back to 'tillering' if unknown)
+ */
+function getStageThresholds(crop: DiagnosticCropProfile = 'generic', stage: GrowthStage = 'tillering'): DiagnosticThresholds {
+  return STAGE_THRESHOLDS[crop]?.[stage] ?? STAGE_THRESHOLDS.generic[stage] ?? STAGE_THRESHOLDS.generic.tillering;
+}
+
+// Keep the old export name as an alias so callers that pass no stage still work.
+// Will be removed once P3 wires sowing_date through the full call chain.
+function getSeasonalThresholds(crop: DiagnosticCropProfile = 'generic', stage?: GrowthStage): DiagnosticThresholds {
+  return getStageThresholds(crop, stage ?? 'tillering');
 }
 
 const TREND_THRESHOLD_PERCENT = -30; // 30% decline triggers trend alert
@@ -189,6 +359,8 @@ const INDEX_COLORS: Record<DiagnosticIndex, string> = {
   potassium: '#10b981',   // Emerald
   moisture: '#3b82f6',    // Blue
   ndvi: '#22c55e',        // Green
+  ph: '#f59e0b',          // Amber
+  salinity: '#dc2626',    // Red
 };
 
 const INDEX_LABELS: Record<DiagnosticIndex, string> = {
@@ -197,6 +369,8 @@ const INDEX_LABELS: Record<DiagnosticIndex, string> = {
   potassium: 'Potassium',
   moisture: 'Soil Moisture',
   ndvi: 'Crop Health',
+  ph: 'Soil pH',
+  salinity: 'Soil Salinity',
 };
 
 const INDEX_CONFIDENCE: Record<DiagnosticIndex, DiagnosticConfidence> = {
@@ -205,10 +379,12 @@ const INDEX_CONFIDENCE: Record<DiagnosticIndex, DiagnosticConfidence> = {
   potassium: 'medium',
   moisture: 'medium',
   ndvi: 'high',
+  ph: 'low',
+  salinity: 'low',
 };
 
 const MULTIPLE_PROBLEM_COLOR = '#a855f7'; // Purple
-const DIAGNOSTIC_REQUEST_TIMEOUT_MS = 8000;
+const DIAGNOSTIC_REQUEST_TIMEOUT_MS = 120000;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 /**
@@ -219,17 +395,26 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3
 export async function analyzeFarm(
   farmId: string,
   geometry: FarmGeometry,
-  onProgress?: (progress: number, message: string) => void
+  crop: DiagnosticCropProfile = 'generic',
+  onProgress?: (progress: number, message: string) => void,
+  sowingDate?: string,
 ): Promise<DiagnosticResult> {
   const startTime = Date.now();
   onProgress?.(0, 'Starting farm analysis...');
 
   try {
+    if (!UUID_PATTERN.test(farmId)) {
+      throw new Error(`Diagnostics require a Supabase farm UUID. Received "${farmId}".`);
+    }
+
     // Call the server's diagnostics endpoint which handles Earth Engine analysis
     onProgress?.(10, 'Fetching satellite data from Earth Engine...');
 
     const polygon = JSON.stringify(geometry);
-    const url = buildApiUrl(`/diagnostics?polygon=${encodeURIComponent(polygon)}&days=14&cloud=50`);
+    const sowingParam = sowingDate ? `&sowing_date=${encodeURIComponent(sowingDate)}` : '';
+    const url = buildApiUrl(
+      `/diagnostics?polygon=${encodeURIComponent(polygon)}&farm_id=${encodeURIComponent(farmId)}&crop=${encodeURIComponent(crop)}&days=30&cloud=80${sowingParam}`
+    );
 
     const controller = new AbortController();
     const timeoutId = window.setTimeout(() => controller.abort(), DIAGNOSTIC_REQUEST_TIMEOUT_MS);
@@ -271,6 +456,13 @@ export async function analyzeFarm(
     const cellData: SamplePoint[] = serverResult.data?.cellData || serverResult.cellData || [];
     console.log(`[diagnosticService] Received ${cellData.length} sample points from server`);
 
+    // Cloud/data-quality gate: if the satellite pass was mostly cloud-covered
+    // (>60% cloud fraction) or fewer than 2 clear observations, suppress all flagging
+    // for optical-only indices — clamped raw values are meaningless in this case.
+    const cloudFraction = metadata.cloudCover ?? metadata.cloud_cover ?? 0;
+    const imagesUsed = metadata.imagesAnalyzed ?? metadata.daysAnalyzed ?? 99;
+    const lowDataQuality = cloudFraction > 60 || imagesUsed < 2;
+
     // Extract analysis for each index
     for (const index of DIAGNOSTIC_INDICES) {
       const indexData = analysis[index];
@@ -284,6 +476,12 @@ export async function analyzeFarm(
       const change = normalizeTrendChange(index, indexData.trend || 0, value, changeUnit, indexData);
 
       indexProblems.set(index, { threshold, trend, value, change, changeUnit, confidence });
+
+      // Only add to summaries if: (a) it's a flagging index and (b) data quality is adequate.
+      // Advisory indices (P/K, pH, salinity) are stored in indexProblems for the
+      // info panel but never pushed to problemSummaries (the flagged list).
+      if (!FLAGGING_INDICES.has(index)) continue;
+      if (lowDataQuality) continue;
 
       if (threshold || trend) {
         problemSummaries.push({
@@ -302,18 +500,38 @@ export async function analyzeFarm(
 
     onProgress?.(70, 'Assigning problems to grid cells...');
 
-    // Assign problems to cells using real data when available, random fallback otherwise
-    assignProblemsToCells(cells, indexProblems, problemSummaries, cellData);
+    if (cellData.length === 0) {
+      throw new Error('Diagnostics API returned no cell-level satellite samples; refusing to synthesize map cells.');
+    }
+
+    // Derive growth stage from sowing date (falls back to 'tillering' if not provided)
+    const cropFamily = parseCropFamily(crop);
+    const phenology = sowingDate
+      ? deriveGrowthStage(sowingDate, cropFamily)
+      : null;
+    const currentStage: GrowthStage = phenology?.stage ?? 'tillering';
+
+    assignProblemsToCells(cells, indexProblems, problemSummaries, cellData, crop, currentStage);
 
     onProgress?.(90, 'Calculating statistics...');
 
-    // Calculate farm statistics
     const problemCells = cells.filter(c => c.problems.length > 0);
     const overlapCells = cells.filter(c => c.problems.length > 1);
+
+    const advisory: AdvisoryIndexData[] = [];
+    for (const index of ADVISORY_INDICES) {
+      const a = indexProblems.get(index);
+      if (a) advisory.push({ index, value: a.value, confidence: a.confidence, label: INDEX_LABELS[index], color: INDEX_COLORS[index] });
+    }
 
     const result: DiagnosticResult = {
       cells,
       problems: problemSummaries,
+      advisory,
+      lowDataQuality,
+      growthStage: currentStage,
+      growthStageName: phenology?.stageName ?? STAGE_LABELS[currentStage],
+      sowingDate: phenology?.sowingDate,
       analysisDate: new Date().toISOString(),
       imagesAnalyzed: metadata.imagesAnalyzed || metadata.daysAnalyzed || 14,
       cloudCover: metadata.cloudCover || metadata.cloud_cover,
@@ -331,124 +549,8 @@ export async function analyzeFarm(
 
   } catch (error) {
     console.error('[diagnosticService] Error calling diagnostics API:', error);
-
-    if (!UUID_PATTERN.test(farmId)) {
-      // Local farm ids are offline drafts; keep the map usable without blocking on live GEE.
-      onProgress?.(70, 'Using local diagnostic fallback...');
-      return createLocalDiagnosticResult(farmId, geometry, startTime, onProgress);
-    }
-
     throw error;
   }
-}
-
-function createLocalDiagnosticResult(
-  farmId: string,
-  geometry: FarmGeometry,
-  startTime: number,
-  onProgress?: (progress: number, message: string) => void
-): DiagnosticResult {
-  onProgress?.(80, 'Building local warning cells...');
-
-  const cells = createGridCells(geometry, 10);
-  const selectedCells = pickDiagnosticCells(cells);
-  const localProblems: Array<{ index: DiagnosticIndex; value: number; threshold: number }> = [
-    { index: 'nitrogen', value: 43.1, threshold: getSeasonalThresholds().nitrogen.low },
-    { index: 'moisture', value: -4.4, threshold: getSeasonalThresholds().moisture.low },
-    { index: 'phosphorus', value: 37.7, threshold: getSeasonalThresholds().phosphorus.low },
-  ];
-
-  selectedCells.forEach((cell, index) => {
-    const primary = localProblems[index] || localProblems[0];
-    const problemsForCell = index === 1 ? [primary, localProblems[2]] : [primary];
-
-    cell.problems = problemsForCell.map((problem) => ({
-      index: problem.index,
-      type: 'threshold',
-      currentValue: problem.value,
-      threshold: problem.threshold,
-      confidence: problem.index === 'phosphorus' ? 'low' : problem.index === 'moisture' ? 'medium' : 'high',
-      severityScore: index === 1 ? 0.86 : 0.64,
-      message: `${INDEX_LABELS[problem.index]} warning from local diagnostic fallback for ${farmId}.`,
-      urgent: index === 1,
-    }));
-    cell.severity = index === 1 ? 'high' : 'medium';
-  });
-
-  const problemCells = cells.filter((cell) => cell.problems.length > 0);
-  const overlapCells = cells.filter((cell) => cell.problems.length > 1);
-  const problemSummaries = rebuildSummariesFromCells(cells);
-
-  onProgress?.(100, `Analysis complete in ${((Date.now() - startTime) / 1000).toFixed(1)}s`);
-
-  return {
-    cells,
-    problems: problemSummaries,
-    analysisDate: '2026-02-14T15:55:02.000Z',
-    imagesAnalyzed: 14,
-    farmStats: {
-      totalCells: cells.length,
-      problemCells: problemCells.length,
-      healthyCells: cells.length - problemCells.length,
-      overlapCells: overlapCells.length,
-    },
-  };
-}
-
-function pickDiagnosticCells(cells: GridCell[]): GridCell[] {
-  if (cells.length <= 3) return cells;
-
-  const lats = cells.map((cell) => cell.center[0]);
-  const lngs = cells.map((cell) => cell.center[1]);
-  const minLat = Math.min(...lats);
-  const maxLat = Math.max(...lats);
-  const minLng = Math.min(...lngs);
-  const maxLng = Math.max(...lngs);
-  const used = new Set<string>();
-
-  const targets: Array<[number, number]> = [
-    [minLat + (maxLat - minLat) * 0.68, minLng + (maxLng - minLng) * 0.43],
-    [minLat + (maxLat - minLat) * 0.47, minLng + (maxLng - minLng) * 0.53],
-    [minLat + (maxLat - minLat) * 0.34, minLng + (maxLng - minLng) * 0.74],
-  ];
-
-  return targets
-    .map(([targetLat, targetLng]) => {
-      const nearest = cells
-        .filter((cell) => !used.has(cell.id))
-        .sort((a, b) => {
-          const aDist = (a.center[0] - targetLat) ** 2 + (a.center[1] - targetLng) ** 2;
-          const bDist = (b.center[0] - targetLat) ** 2 + (b.center[1] - targetLng) ** 2;
-          return aDist - bDist;
-        })[0];
-      if (nearest) used.add(nearest.id);
-      return nearest;
-    })
-    .filter((cell): cell is GridCell => Boolean(cell));
-}
-
-function rebuildSummariesFromCells(cells: GridCell[]): ProblemSummary[] {
-  return DIAGNOSTIC_INDICES.flatMap((index) => {
-    const problems = cells.flatMap((cell) => cell.problems.filter((problem) => problem.index === index));
-    if (problems.length === 0) return [];
-
-    const avgValue = problems.reduce((sum, problem) => sum + problem.currentValue, 0) / problems.length;
-    const type: ProblemSummary['type'] = problems.some((problem) => problem.type === 'both')
-      ? 'both'
-      : problems.some((problem) => problem.type === 'threshold')
-        ? 'threshold'
-        : 'trend';
-
-    return [{
-      index,
-      type,
-      cellCount: problems.length,
-      avgValue,
-      color: INDEX_COLORS[index],
-      label: INDEX_LABELS[index],
-      confidence: problems[0]?.confidence || INDEX_CONFIDENCE[index],
-    }];
-  });
 }
 
 /**
@@ -459,26 +561,30 @@ function rebuildSummariesFromCells(cells: GridCell[]): ProblemSummary[] {
 export async function analyzeFarmWithRaster(
   farmId: string,
   geometry: FarmGeometry,
-  onProgress?: (progress: number, message: string) => void
+  crop: DiagnosticCropProfile = 'generic',
+  onProgress?: (progress: number, message: string) => void,
+  sowingDate?: string,
 ): Promise<DiagnosticRasterResult> {
   const startTime = Date.now();
   onProgress?.(0, 'Starting farm analysis...');
 
   try {
+    if (!UUID_PATTERN.test(farmId)) {
+      throw new Error(`Raster diagnostics require a Supabase farm UUID. Received "${farmId}".`);
+    }
+
     onProgress?.(10, 'Fetching satellite data...');
 
     const polygon = JSON.stringify(geometry);
+    const sowingParam = sowingDate ? `&sowing_date=${encodeURIComponent(sowingDate)}` : '';
     const apiUrl = buildApiUrl(
-      `/diagnostics?polygon=${encodeURIComponent(polygon)}&farm_id=${encodeURIComponent(farmId)}&days=14&cloud=50`
+      `/diagnostics?polygon=${encodeURIComponent(polygon)}&farm_id=${encodeURIComponent(farmId)}&crop=${encodeURIComponent(crop)}&days=30&cloud=80${sowingParam}`
     );
 
     // Fetch server diagnostics and time-series history concurrently
     const [response, timeSeriesResults] = await Promise.all([
       fetch(apiUrl, { headers: { ...getSupabaseFunctionHeaders() } }),
-      fetchAllIndicesTimeSeries(geometry).catch(e => {
-        console.warn('Failed to fetch time series:', e);
-        return {};
-      })
+      fetchAllIndicesTimeSeries(geometry)
     ]);
 
     if (!response.ok) {
@@ -503,6 +609,10 @@ export async function analyzeFarmWithRaster(
     const problemSummaries: ProblemSummary[] = [];
     const indexProblems: Map<DiagnosticIndex, IndexAnalysis> = new Map();
 
+    const cloudFraction = metadata.cloudCover ?? metadata.cloud_cover ?? 0;
+    const imagesUsed = metadata.imagesAnalyzed ?? metadata.daysAnalyzed ?? 99;
+    const lowDataQuality = cloudFraction > 60 || imagesUsed < 2;
+
     for (const index of DIAGNOSTIC_INDICES) {
       const indexData = analysis[index];
       if (!indexData) continue;
@@ -513,6 +623,8 @@ export async function analyzeFarmWithRaster(
       const changeUnit = getAnalysisTrendUnit(index, indexData);
       const change = normalizeTrendChange(index, indexData.trend || 0, value, changeUnit, indexData);
       indexProblems.set(index, { threshold, trend, value, change, changeUnit, confidence });
+      if (!FLAGGING_INDICES.has(index)) continue;
+      if (lowDataQuality) continue;
       if (threshold || trend) {
         problemSummaries.push({
           index,
@@ -529,15 +641,34 @@ export async function analyzeFarmWithRaster(
     }
 
     onProgress?.(75, 'Assigning problems to grid cells...');
-    assignProblemsToCells(cells, indexProblems, problemSummaries, cellData);
+    if (cellData.length === 0) {
+      throw new Error('Diagnostics API returned no cell-level satellite samples; refusing to synthesize raster map cells.');
+    }
+
+    const cropFamily = parseCropFamily(crop);
+    const phenology = sowingDate ? deriveGrowthStage(sowingDate, cropFamily) : null;
+    const currentStage: GrowthStage = phenology?.stage ?? 'tillering';
+
+    assignProblemsToCells(cells, indexProblems, problemSummaries, cellData, crop, currentStage);
 
     onProgress?.(90, 'Calculating statistics...');
     const problemCells = cells.filter((c) => c.problems.length > 0);
     const overlapCells = cells.filter((c) => c.problems.length > 1);
 
+    const advisory: AdvisoryIndexData[] = [];
+    for (const index of ADVISORY_INDICES) {
+      const a = indexProblems.get(index);
+      if (a) advisory.push({ index, value: a.value, confidence: a.confidence, label: INDEX_LABELS[index], color: INDEX_COLORS[index] });
+    }
+
     const result: DiagnosticRasterResult = {
       cells,
       problems: problemSummaries,
+      advisory,
+      lowDataQuality,
+      growthStage: currentStage,
+      growthStageName: phenology?.stageName ?? STAGE_LABELS[currentStage],
+      sowingDate: phenology?.sowingDate,
       analysisDate: new Date().toISOString(),
       imagesAnalyzed: metadata.imagesAnalyzed || metadata.daysAnalyzed || 14,
       cloudCover: metadata.cloudCover || metadata.cloud_cover,
@@ -559,88 +690,8 @@ export async function analyzeFarmWithRaster(
     return result;
   } catch (error) {
     console.error('[diagnosticService] analyzeFarmWithRaster error:', error);
-    onProgress?.(20, 'Falling back to standard analysis...');
-    const base = await analyzeFarm(farmId, geometry, onProgress);
-    return {
-      ...base,
-      rasterUrls: {} as Record<DiagnosticIndex, string>,
-      bounds: [[0, 0], [0, 0]],
-    };
+    throw error;
   }
-}
-
-/**
- * Fallback analysis when server is unavailable
- */
-async function fallbackAnalyzeFarm(
-  farmId: string,
-  geometry: FarmGeometry,
-  onProgress?: (progress: number, message: string) => void,
-  startTime?: number
-): Promise<DiagnosticResult> {
-  const start = startTime || Date.now();
-
-  // Fetch time-series data for all indices in parallel
-  onProgress?.(30, 'Fetching satellite data (fallback)...');
-  const timeSeriesResults = await fetchAllIndicesTimeSeries(geometry);
-  onProgress?.(50, 'Analyzing data...');
-
-  // Create grid cells for the farm
-  const cells = createGridCells(geometry, 10);
-  onProgress?.(60, `Created ${cells.length} grid cells...`);
-
-  // Analyze each index for problems
-  const problemSummaries: ProblemSummary[] = [];
-  const indexProblems: Map<DiagnosticIndex, IndexAnalysis> = new Map();
-
-  for (const index of DIAGNOSTIC_INDICES) {
-    const data = timeSeriesResults[index];
-    if (!data || data.length === 0) continue;
-
-    const analysis = analyzeIndexData(index, data);
-    indexProblems.set(index, analysis);
-
-    if (analysis.threshold || analysis.trend) {
-      problemSummaries.push({
-        index,
-        type: analysis.threshold && analysis.trend ? 'both' : (analysis.threshold ? 'threshold' : 'trend'),
-        cellCount: 0, // Will be updated after cell assignment
-        avgValue: analysis.value,
-        avgDecline: analysis.change,
-        avgDeclineUnit: analysis.changeUnit,
-        confidence: analysis.confidence,
-        color: INDEX_COLORS[index],
-        label: INDEX_LABELS[index],
-      });
-    }
-  }
-
-  onProgress?.(70, 'Assigning problems to grid cells...');
-
-  // Assign problems to cells
-  assignProblemsToCells(cells, indexProblems, problemSummaries);
-
-  onProgress?.(90, 'Calculating statistics...');
-
-  // Calculate farm statistics
-  const problemCells = cells.filter(c => c.problems.length > 0);
-  const overlapCells = cells.filter(c => c.problems.length > 1);
-
-  const result: DiagnosticResult = {
-    cells,
-    problems: problemSummaries,
-    analysisDate: new Date().toISOString(),
-    imagesAnalyzed: Math.min(...Object.values(timeSeriesResults).map(d => d?.length || 0)),
-    farmStats: {
-      totalCells: cells.length,
-      problemCells: problemCells.length,
-      healthyCells: cells.length - problemCells.length,
-      overlapCells: overlapCells.length,
-    },
-  };
-
-  onProgress?.(100, `Analysis complete in ${((Date.now() - start) / 1000).toFixed(1)}s`);
-  return result;
 }
 
 /**
@@ -659,63 +710,42 @@ async function fetchAllIndicesTimeSeries(
     potassium: [],
     moisture: [],
     ndvi: [],
+    ph: [],
+    salinity: [],
   };
 
   // Fetch all indices in parallel
   const fetchPromises = DIAGNOSTIC_INDICES.map(async (index) => {
-    try {
-      const url = buildApiUrl(
-        `${API_ENDPOINTS.agriculturalIndices}?index=${index}&polygon=${encodeURIComponent(polygon)}&start=${startDate}&end=${endDate}&timeseries=true`
-      );
+    const url = buildApiUrl(
+      `${API_ENDPOINTS.agriculturalIndices}?index=${index}&polygon=${encodeURIComponent(polygon)}&start=${startDate}&end=${endDate}&timeseries=true`
+    );
 
-      const response = await fetch(url, {
-        headers: {
-          ...getSupabaseFunctionHeaders(),
-        },
-      });
-      if (!response.ok) {
-        console.warn(`[Diagnostics] Failed to fetch ${index}: ${response.statusText}`);
-        return { index, data: [] };
-      }
-
-      const json = (await response.json()) as AgriculturalIndexResponse;
-
-      // Handle time-series response format
-      if (json.data?.windows) {
-        const windows = json.data.windows;
-        return {
-          index,
-          data: windows.map((w) => ({
-            date: w.startDate || w.endDate,
-            mean: w.mean,
-            min: w.min,
-            max: w.max,
-            stdDev: w.stdDev,
-            cloudCover: w.cloudCover,
-          })),
-        };
-      }
-
-      // Handle single response format (fallback)
-      if (json.mean_value !== undefined) {
-        return {
-          index,
-          data: [{
-            date: endDate,
-            mean: json.mean_value,
-            min: json.min_value,
-            max: json.max_value,
-            stdDev: json.std_dev,
-            cloudCover: json.cloudCover,
-          }],
-        };
-      }
-
-      return { index, data: [] };
-    } catch (error) {
-      console.error(`[Diagnostics] Error fetching ${index}:`, error);
-      return { index, data: [] };
+    const response = await fetch(url, {
+      headers: {
+        ...getSupabaseFunctionHeaders(),
+      },
+    });
+    if (!response.ok) {
+      throw new Error(`Failed to fetch ${index} time series: ${response.status} ${response.statusText}`);
     }
+
+    const json = (await response.json()) as AgriculturalIndexResponse;
+    if (!json.data?.windows) {
+      throw new Error(`Time-series response for ${index} did not include data.windows.`);
+    }
+
+    const windows = json.data.windows;
+    return {
+      index,
+      data: windows.map((w) => ({
+        date: w.startDate || w.endDate,
+        mean: w.mean,
+        min: w.min,
+        max: w.max,
+        stdDev: w.stdDev,
+        cloudCover: w.cloudCover,
+      })),
+    };
   });
 
   const fetchResults = await Promise.all(fetchPromises);
@@ -724,56 +754,6 @@ async function fetchAllIndicesTimeSeries(
   });
 
   return results;
-}
-
-/**
- * Analyze index data for threshold violations and trends
- */
-function analyzeIndexData(
-  index: DiagnosticIndex,
-  data: TimeSeriesDataPoint[]
-): IndexAnalysis {
-  if (data.length === 0) {
-    return {
-      threshold: false,
-      trend: false,
-      value: 0,
-      change: 0,
-      changeUnit: 'percent',
-      confidence: INDEX_CONFIDENCE[index],
-    };
-  }
-
-  // Get current value (most recent)
-  const currentValue = normalizeDiagnosticValue(index, data[data.length - 1].mean);
-  const thresholds = getSeasonalThresholds()[index];
-
-  // Only flag critical threshold violations (below 'low', not 'warning')
-  const threshold = currentValue < thresholds.low;
-
-  // Trend detection (compare first and last)
-  let change = 0;
-  let trend = false;
-  const changeUnit: DiagnosticTrendUnit = NPK_INDICES.has(index) ? 'points' : 'percent';
-  if (data.length >= 2) {
-    const firstValue = normalizeDiagnosticValue(index, data[0].mean);
-    const lastValue = currentValue;
-
-    if (changeUnit === 'points') {
-      change = lastValue - firstValue;
-      trend = change < NUTRIENT_TREND_THRESHOLD_POINTS && lastValue < thresholds.warning;
-    } else if (firstValue > 0) {
-      change = ((lastValue - firstValue) / firstValue) * 100;
-      trend = change < TREND_THRESHOLD_PERCENT && lastValue < thresholds.warning;
-    }
-  }
-
-  return { threshold, trend, value: currentValue, change, changeUnit, confidence: INDEX_CONFIDENCE[index] };
-}
-
-function normalizeDiagnosticValue(index: DiagnosticIndex, value: number): number {
-  if (!Number.isFinite(value)) return 0;
-  return NPK_INDICES.has(index) ? Math.max(0, Math.min(100, value)) : value;
 }
 
 function getAnalysisConfidence(
@@ -966,141 +946,88 @@ function propagateSamplesToNearbyCells(
 
 /**
  * Assign problems to grid cells.
- * Uses data-driven path when cellData is available (real per-pixel satellite data),
- * falls back to random assignment when cellData is empty.
+ * Uses real per-pixel satellite samples from the diagnostics Edge Function.
  */
 function assignProblemsToCells(
   cells: GridCell[],
   indexProblems: Map<DiagnosticIndex, IndexAnalysis>,
   problemSummaries: ProblemSummary[],
-  cellData: SamplePoint[] = []
+  cellData: SamplePoint[],
+  crop: DiagnosticCropProfile = 'generic',
+  stage: GrowthStage = 'tillering'
 ): void {
-  const seasonalThresholds = getSeasonalThresholds();
+  const thresholdsByIndex = getStageThresholds(crop, stage);
 
-  if (cellData.length > 0) {
-    // --- DATA-DRIVEN PATH: use real per-pixel values ---
-    console.log(`[diagnosticService] Using data-driven placement with ${cellData.length} sample points`);
+  if (cellData.length === 0) {
+    throw new Error('Cannot assign diagnostic problems without cell-level satellite samples.');
+  }
 
-    // Map sample points to grid cells
-    let cellSamples = mapSamplePointsToCells(cells, cellData);
+  console.log(`[diagnosticService] Using data-driven placement with ${cellData.length} sample points`);
 
-    // Propagate 30m samples to neighboring 10m cells
-    cellSamples = propagateSamplesToNearbyCells(cells, cellSamples);
+  let cellSamples = mapSamplePointsToCells(cells, cellData);
+  cellSamples = propagateSamplesToNearbyCells(cells, cellSamples);
 
-    console.log(`[diagnosticService] ${cellSamples.size} cells have sample data (after propagation)`);
+  console.log(`[diagnosticService] ${cellSamples.size} cells have sample data after propagation`);
 
-    // Check each cell's sample values against seasonal thresholds
-    for (const cell of cells) {
-      const samples = cellSamples.get(cell.id);
-      if (!samples || samples.length === 0) continue;
+  for (const cell of cells) {
+    const samples = cellSamples.get(cell.id);
+    if (!samples || samples.length === 0) continue;
 
-      // Average sample values for this cell
-      const avgValues: Record<string, number> = {};
-      for (const index of DIAGNOSTIC_INDICES) {
-        const validValues = samples
-          .map(s => s[index])
-          .filter((v): v is number => v !== null && v !== undefined && !isNaN(v));
-        if (validValues.length > 0) {
-          avgValues[index] = validValues.reduce((a, b) => a + b, 0) / validValues.length;
-        }
-      }
-
-      // Check each available index locally. This catches nutrient hotspots even
-      // when the farm-wide average is still acceptable.
-      for (const index of DIAGNOSTIC_INDICES) {
-        const analysis = indexProblems.get(index);
-        if (!analysis) continue;
-        const cellValue = avgValues[index];
-        if (cellValue === undefined) continue;
-
-        const thresholds = seasonalThresholds[index];
-
-        const cellBelowThreshold = cellValue < thresholds.low;
-        const cellBelowWarning = cellValue < thresholds.warning;
-        const shouldFlag = cellBelowThreshold || (analysis.trend && cellBelowWarning);
-
-        if (!shouldFlag) continue;
-
-        const problemType = cellBelowThreshold && analysis.trend ? 'both' : (cellBelowThreshold ? 'threshold' : 'trend');
-        const changePercent = analysis.trend ? analysis.change : undefined;
-        const severityScore = calculateProblemSeverity(index, cellValue, analysis);
-        const previousValue = derivePreviousValue(cellValue, analysis);
-
-        const problem: CellProblem = {
-          index,
-          type: problemType,
-          currentValue: cellValue,
-          previousValue,
-          threshold: thresholds.low,
-          changePercent,
-          changeUnit: analysis.changeUnit,
-          confidence: analysis.confidence,
-          severityScore,
-          message: generateProblemMessage(index, analysis, cellValue),
-          urgent: classifyUrgent({ type: problemType, index, changePercent, severityScore }),
-        };
-
-        cell.problems.push(problem);
+    const avgValues: Record<string, number> = {};
+    for (const index of DIAGNOSTIC_INDICES) {
+      const validValues = samples
+        .map(s => s[index])
+        .filter((v): v is number => v !== null && v !== undefined && !isNaN(v));
+      if (validValues.length > 0) {
+        avgValues[index] = validValues.reduce((a, b) => a + b, 0) / validValues.length;
       }
     }
 
-    rebuildProblemSummaries(cells, indexProblems, problemSummaries);
-  } else {
-    // --- RANDOM FALLBACK: existing behavior when no cellData ---
-    console.log('[diagnosticService] No sample data available, using random placement fallback');
+    for (const index of DIAGNOSTIC_INDICES) {
+      // Only satellite-reliable indices may raise a flagged problem cell.
+      // P/K, pH, salinity are advisory-only — they appear in the info panel but
+      // never colour a cell red or inflate the problem count.
+      if (!FLAGGING_INDICES.has(index)) continue;
 
-    indexProblems.forEach((analysis, index) => {
-      if (!analysis.threshold && !analysis.trend) return;
+      const analysis = indexProblems.get(index);
+      if (!analysis) continue;
+      const cellValue = avgValues[index];
+      if (cellValue === undefined) continue;
 
-      const thresholds = seasonalThresholds[index];
+      // Data-quality gate: physically impossible values (moisture < 0 after clamping
+      // should not occur, but guard anyway) or index signals a no-data placeholder.
+      if (!Number.isFinite(cellValue) || cellValue < 0) continue;
 
-      // Only flag 1-5% of cells
-      const affectedRatio = analysis.threshold && analysis.trend
-        ? 0.05
-        : analysis.threshold
-        ? 0.03
-        : 0.02;
-      const numAffected = Math.max(1, Math.floor(cells.length * affectedRatio));
+      const issue = evaluateThresholdIssue(cellValue, thresholdsByIndex[index]);
+      const shouldFlag = issue.isCritical || (analysis.trend && issue.isWarning);
 
-      const shuffled = [...cells];
-      for (let i = shuffled.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-      }
-      const affectedCells = shuffled.slice(0, numAffected);
+      if (!shouldFlag) continue;
 
-      affectedCells.forEach(cell => {
-        const variation = (Math.random() - 0.5) * analysis.value * 0.3;
-        const cellValue = analysis.value + variation;
-        const problemType = analysis.threshold && analysis.trend ? 'both' : (analysis.threshold ? 'threshold' : 'trend');
-        const changePercent = analysis.trend ? analysis.change : undefined;
-        const severityScore = calculateProblemSeverity(index, cellValue, analysis);
-        const previousValue = derivePreviousValue(cellValue, analysis);
+      const problemType = issue.isCritical && analysis.trend ? 'both' : (issue.isCritical ? 'threshold' : 'trend');
+      const changePercent = analysis.trend ? analysis.change : undefined;
+      const severityScore = calculateProblemSeverity(index, cellValue, analysis, thresholdsByIndex[index], issue.direction);
+      const previousValue = derivePreviousValue(cellValue, analysis);
 
-        const problem: CellProblem = {
-          index,
-          type: problemType,
-          currentValue: cellValue,
-          previousValue,
-          threshold: thresholds.low,
-          changePercent,
-          changeUnit: analysis.changeUnit,
-          confidence: analysis.confidence,
-          severityScore,
-          message: generateProblemMessage(index, analysis, cellValue),
-          urgent: classifyUrgent({ type: problemType, index, changePercent, severityScore }),
-        };
+      const problem: CellProblem = {
+        index,
+        type: problemType,
+        currentValue: cellValue,
+        previousValue,
+        threshold: issue.threshold,
+        direction: issue.direction,
+        changePercent,
+        changeUnit: analysis.changeUnit,
+        confidence: analysis.confidence,
+        severityScore,
+        message: generateProblemMessage(index, analysis, cellValue, thresholdsByIndex[index], issue.direction),
+        urgent: classifyUrgent({ type: problemType, index, changePercent, severityScore }),
+      };
 
-        cell.problems.push(problem);
-      });
-
-      const summary = problemSummaries.find(p => p.index === index);
-      if (summary) {
-        summary.cellCount = numAffected;
-        summary.confidence = analysis.confidence;
-      }
-    });
+      cell.problems.push(problem);
+    }
   }
+
+  rebuildProblemSummaries(cells, indexProblems, problemSummaries);
 
   // Update cell severities from the strongest local signal and overlap risk.
   cells.forEach(cell => {
@@ -1123,18 +1050,57 @@ function assignProblemsToCells(
 function calculateProblemSeverity(
   index: DiagnosticIndex,
   cellValue: number,
-  analysis: IndexAnalysis
+  analysis: IndexAnalysis,
+  thresholds: DiagnosticThreshold,
+  direction?: ThresholdDirection
 ): number {
-  const thresholds = getSeasonalThresholds()[index];
-  const denominator = Math.max(thresholds.warning, 1);
-  const thresholdPressure = Math.max(0, (thresholds.warning - cellValue) / denominator);
-  const criticalBoost = cellValue < thresholds.low ? 0.32 : 0;
+  const issue = evaluateThresholdIssue(cellValue, thresholds);
+  const activeDirection = direction || issue.direction;
+  const warningThreshold = activeDirection === 'high'
+    ? thresholds.warningHigh ?? thresholds.high ?? issue.threshold
+    : thresholds.warning ?? thresholds.low ?? issue.threshold;
+  const denominator = Math.max(Math.abs(warningThreshold), 1);
+  const thresholdPressure = activeDirection === 'high'
+    ? Math.max(0, (cellValue - warningThreshold) / denominator)
+    : Math.max(0, (warningThreshold - cellValue) / denominator);
+  const criticalBoost = issue.isCritical ? 0.32 : 0;
   const trendBoost = analysis.trend
     ? Math.min(Math.abs(analysis.change) / (analysis.changeUnit === 'points' ? 50 : 100), 0.35)
     : 0;
   const confidencePenalty = analysis.confidence === 'low' ? -0.08 : analysis.confidence === 'medium' ? -0.03 : 0;
 
   return Math.max(0.15, Math.min(1, thresholdPressure + criticalBoost + trendBoost + confidencePenalty));
+}
+
+function evaluateThresholdIssue(
+  value: number,
+  thresholds: DiagnosticThreshold
+): { isCritical: boolean; isWarning: boolean; direction: ThresholdDirection; threshold: number } {
+  const lowThreshold = thresholds.low;
+  const warningLow = thresholds.warning ?? lowThreshold;
+  const highThreshold = thresholds.high;
+  const warningHigh = thresholds.warningHigh ?? highThreshold;
+
+  const lowCritical = lowThreshold !== undefined && value < lowThreshold;
+  const highCritical = highThreshold !== undefined && value > highThreshold;
+  const lowWarning = warningLow !== undefined && value < warningLow;
+  const highWarning = warningHigh !== undefined && value > warningHigh;
+
+  if (highCritical || (!lowCritical && highWarning)) {
+    return {
+      isCritical: highCritical,
+      isWarning: highWarning,
+      direction: 'high',
+      threshold: highThreshold ?? warningHigh ?? value,
+    };
+  }
+
+  return {
+    isCritical: lowCritical,
+    isWarning: lowWarning,
+    direction: 'low',
+    threshold: lowThreshold ?? warningLow ?? value,
+  };
 }
 
 function rebuildProblemSummaries(
@@ -1181,19 +1147,28 @@ function rebuildProblemSummaries(
 function generateProblemMessage(
   index: DiagnosticIndex,
   analysis: IndexAnalysis,
-  cellValue: number
+  cellValue: number,
+  thresholds: DiagnosticThreshold,
+  direction?: ThresholdDirection
 ): string {
   const label = INDEX_LABELS[index];
-  const thresholds = getSeasonalThresholds()[index];
+  const issue = evaluateThresholdIssue(cellValue, thresholds);
+  const activeDirection = direction || issue.direction;
   const messages: string[] = [];
 
-  if (cellValue < thresholds.low) {
+  if (issue.isCritical) {
     const formattedValue = NPK_INDICES.has(index) ? cellValue.toFixed(0) : cellValue.toFixed(1);
-    const unit = NPK_INDICES.has(index) ? 'satellite sufficiency score' : 'value';
-    messages.push(`${label} ${unit} is low at ${formattedValue} (below ${thresholds.low})`);
+    const unit = NPK_INDICES.has(index)
+      ? 'satellite sufficiency score'
+      : index === 'salinity'
+        ? 'estimate'
+        : 'value';
+    const qualifier = activeDirection === 'high' ? 'high' : 'low';
+    const comparator = activeDirection === 'high' ? 'above' : 'below';
+    messages.push(`${label} ${unit} is ${qualifier} at ${formattedValue} (${comparator} ${issue.threshold})`);
   }
 
-  if (analysis.trend) {
+  if (analysis.trend && LOW_STRESS_INDICES.has(index)) {
     const suffix = analysis.changeUnit === 'points' ? ' points' : '%';
     messages.push(`${label} steep decline of ${Math.abs(analysis.change).toFixed(1)}${suffix}`);
   }
@@ -1269,7 +1244,12 @@ export function getCellSeverityScore(cell: GridCell): number {
  * Get thresholds for an index (season-aware)
  */
 export function getIndexThresholds(index: DiagnosticIndex): { low: number; warning: number } {
-  return getSeasonalThresholds()[index];
+  const thresholds = getSeasonalThresholds()[index];
+  return {
+    low: thresholds.low ?? thresholds.high ?? 0,
+    warning: thresholds.warning ?? thresholds.warningHigh ?? thresholds.low ?? thresholds.high ?? 0,
+    ...thresholds,
+  } as { low: number; warning: number };
 }
 
 /**
