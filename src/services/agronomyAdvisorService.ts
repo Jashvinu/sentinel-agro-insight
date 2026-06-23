@@ -7,6 +7,7 @@ import {
 } from '@/data/agronomyKnowledge';
 import {
   DiagnosticIndex,
+  DiagnosticResult,
   DiagnosticRasterResult,
   getIndexLabel,
 } from '@/services/diagnosticService';
@@ -22,7 +23,8 @@ export interface RetrievedKnowledgeChunk {
 export interface AgronomyAdvisoryInput {
   crop: AdvisoryCrop;
   season: AdvisorySeason;
-  result: DiagnosticRasterResult | null;
+  /** Accepts base DiagnosticResult or its raster subtype. */
+  result: DiagnosticResult | null;
   weather: WeatherData | null;
   farmName?: string;
 }
@@ -76,6 +78,8 @@ const INDEX_TAGS: Record<DiagnosticIndex, string[]> = {
   potassium: ['potassium', 'nutrient', 'moisture'],
   moisture: ['moisture', 'water', 'drought'],
   ndvi: ['crop-stress', 'weed', 'pest'],
+  ph: ['soil', 'ph', 'nutrient'],
+  salinity: ['soil', 'salinity', 'water'],
 };
 
 const sum = (values: number[]) => values.reduce((total, value) => total + value, 0);
@@ -201,7 +205,7 @@ export function retrieveAgronomyKnowledge(
     .slice(0, limit);
 }
 
-function summarizeDiagnostics(result: DiagnosticRasterResult | null): string {
+function summarizeDiagnostics(result: DiagnosticResult | null): string {
   if (!result) return 'No satellite diagnostic result is available yet.';
 
   if (result.problems.length === 0) {
@@ -343,12 +347,16 @@ async function requestServerRagAdvisory(
   retrieved: RetrievedKnowledgeChunk[],
   weatherSummary: WeatherAdvisorySummary
 ): Promise<{ text: string; sources: AgronomySource[]; diagnostics?: Record<string, unknown> }> {
+  const stageCtx = input.result?.growthStageName
+    ? `Growth stage: ${input.result.growthStageName}${input.result.sowingDate ? ` (sown ${input.result.sowingDate})` : ''}.`
+    : '';
   const question = [
-    `Create a practical Maharashtra farm advisory for ${input.farmName || 'the selected farm'}.`,
+    `Create a practical farm advisory for ${input.farmName || 'the selected farm'}.`,
     `Crop: ${input.crop}; season: ${input.season}.`,
+    stageCtx,
     `Satellite diagnostics: ${summarizeDiagnostics(input.result)}`,
     `Weather: ${weatherSummary.summary}`,
-  ].join('\n');
+  ].filter(Boolean).join('\n');
 
   const response = await fetch(buildApiUrl('/rag-advisor'), {
     method: 'POST',

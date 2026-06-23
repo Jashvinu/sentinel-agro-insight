@@ -29,6 +29,7 @@ import { DiagnosticMap } from '@/components/features/diagnostics/DiagnosticMap';
 import { DiagnosticLegend } from '@/components/features/diagnostics/DiagnosticLegend';
 import { ProblemDetailPanel } from '@/components/features/diagnostics/ProblemDetailPanel';
 import { ProblemSummary } from '@/components/features/diagnostics/ProblemSummary';
+import { GeminiAdvisoryCard } from '@/components/features/diagnostics/GeminiAdvisoryCard';
 import ScoutZoneSidebar from '@/components/features/diagnostics/ScoutZoneSidebar';
 import ScoutZoneCapture from '@/components/features/diagnostics/ScoutZoneCapture';
 import NearestKVKCard from '@/components/features/diagnostics/NearestKVKCard';
@@ -410,6 +411,13 @@ const FieldDiagnostics: React.FC = () => {
             {/* Sidebar - takes 1 column on large screens */}
             <div className="space-y-4">
               <ProblemSummary result={result} />
+              <GeminiAdvisoryCard
+                crop={normalizeDiagnosticCrop(farm?.crop_type || farm?.cropType || farm?.crop || farm?.primary_crop) === 'millet' ? 'millet' : 'rice'}
+                season={new Date().getMonth() >= 5 && new Date().getMonth() <= 9 ? 'kharif' : 'rabi'}
+                result={result}
+                weatherData={weatherData}
+                farmName={farm?.name}
+              />
               {scoutZones.length > 0 && (
                 <ScoutZoneSidebar
                   zones={scoutZones}

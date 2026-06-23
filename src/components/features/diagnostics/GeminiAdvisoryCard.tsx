@@ -7,7 +7,7 @@ import {
   AgronomyAdvisory,
   generateAgronomyAdvisory,
 } from '@/services/agronomyAdvisorService';
-import type { DiagnosticRasterResult } from '@/services/diagnosticService';
+import type { DiagnosticResult } from '@/services/diagnosticService';
 import type { WeatherData } from '@/hooks/useWeather';
 import {
   AlertCircle,
@@ -22,7 +22,7 @@ import {
 interface GeminiAdvisoryCardProps {
   crop: AdvisoryCrop;
   season: AdvisorySeason;
-  result: DiagnosticRasterResult | null;
+  result: DiagnosticResult | null;
   weatherData: WeatherData | null;
   farmName?: string;
 }
@@ -132,11 +132,11 @@ export const GeminiAdvisoryCard: React.FC<GeminiAdvisoryCardProps> = ({
           <div className="min-w-0">
             <CardTitle className="text-sm font-semibold flex items-center gap-2">
               <Bot className="w-4 h-4 text-primary" />
-              Server RAG Advisor
+              Qwen3 RAG Advisor
             </CardTitle>
             <div className="mt-2 flex flex-wrap items-center gap-1.5">
               <Badge variant={advisory?.usedGemini ? 'default' : 'outline'} className="text-[10px]">
-                {advisory?.usedGemini ? 'Server Gemini' : 'Local fallback'}
+                {advisory?.usedGemini ? 'Qwen3-235B' : 'Local fallback'}
               </Badge>
               <Badge variant="outline" className="text-[10px] capitalize">
                 {crop === 'rice' ? 'Rice' : 'Millets'}
