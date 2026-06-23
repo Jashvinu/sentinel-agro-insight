@@ -72,6 +72,8 @@ echo ""
 FUNCTIONS=(
     "health"
     "agricultural-indices"
+    "diagnostics"
+    "weather"
     "farm-timeline"
     "field-overview"
     "get-available-dates"

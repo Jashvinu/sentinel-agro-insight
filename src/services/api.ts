@@ -4,55 +4,38 @@ import { retry } from '@/utils';
 
 const VALID_PROTOCOLS = new Set(['http:', 'https:']);
 const URL_MATCHER = /^https?:\/\//i;
+const SUPABASE_FUNCTIONS_PATH = '/functions/v1';
 
 const stripTrailingSlash = (value: string): string => value.replace(/\/+$/, '');
 
+const validateApiBaseUrl = (value: string, source: string): string => {
+    const parsed = new URL(value);
+    if (!VALID_PROTOCOLS.has(parsed.protocol)) {
+        throw new Error(`${source} must use http or https.`);
+    }
+    const normalised = stripTrailingSlash(parsed.toString());
+    if (!normalised.endsWith(SUPABASE_FUNCTIONS_PATH)) {
+        throw new Error(`${source} must point to a Supabase Edge Functions URL ending in ${SUPABASE_FUNCTIONS_PATH}.`);
+    }
+    return normalised;
+};
+
 const resolveApiBaseUrl = (): string => {
-    // Priority 1: Use VITE_API_BASE_URL if set
     const envValue = import.meta.env.VITE_API_BASE_URL?.trim();
     if (envValue) {
-        try {
-            const parsed = new URL(envValue);
-            if (!VALID_PROTOCOLS.has(parsed.protocol)) {
-                throw new Error(`Unsupported protocol "${parsed.protocol}"`);
-            }
-            return stripTrailingSlash(parsed.toString());
-        } catch (error) {
-            console.warn(
-                '[ApiService] Invalid VITE_API_BASE_URL provided. Falling back to defaults.',
-                error
-            );
-        }
+        return validateApiBaseUrl(envValue, 'VITE_API_BASE_URL');
     }
 
-    // Priority 2: Use Vercel API URL (for production)
-    const vercelUrl = import.meta.env.VITE_VERCEL_API_URL?.trim();
-    if (vercelUrl) {
-        console.log('[ApiService] Using Vercel API:', vercelUrl);
-        return stripTrailingSlash(vercelUrl);
-    }
-
-    // Priority 3: Fallback to Supabase URL (from VITE_SUPABASE_URL)
     const supabaseUrl = import.meta.env.VITE_SUPABASE_URL?.trim();
-    if (supabaseUrl) {
-        // Construct Supabase Edge Functions URL
-        const functionsUrl = `${supabaseUrl}/functions/v1`;
-        console.log('[ApiService] Using Supabase Edge Functions:', functionsUrl);
-        return functionsUrl;
+    if (!supabaseUrl) {
+        throw new Error('VITE_SUPABASE_URL is required. Diagnostics only support Supabase Edge Functions.');
     }
 
-    // Priority 4: Fallback to window origin
-    if (typeof window !== 'undefined') {
-        const fallback = stripTrailingSlash(`${window.location.protocol}//${window.location.host}`);
-        console.warn(
-            `[ApiService] VITE_API_BASE_URL not set. Using window origin "${fallback}". ` +
-            'Configure VITE_API_BASE_URL for production deploys.'
-        );
-        return fallback;
+    const parsed = new URL(supabaseUrl);
+    if (!VALID_PROTOCOLS.has(parsed.protocol)) {
+        throw new Error('VITE_SUPABASE_URL must use http or https.');
     }
-
-    // Final fallback: default Supabase URL
-    return 'https://udbnskydigoqpxmmduvr.supabase.co/functions/v1';
+    return `${stripTrailingSlash(parsed.toString())}${SUPABASE_FUNCTIONS_PATH}`;
 };
 
 export const API_BASE_URL = resolveApiBaseUrl();
@@ -61,13 +44,12 @@ export const getSupabaseFunctionHeaders = (): Record<string, string> => {
     const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY?.trim();
     const headers: Record<string, string> = {};
 
-    if (anonKey) {
-        headers['apikey'] = anonKey;
-        headers['Authorization'] = `Bearer ${anonKey}`;
-    } else {
-        console.warn('[ApiService] VITE_SUPABASE_ANON_KEY not set. Requests may fail with 401 Unauthorized.');
+    if (!anonKey) {
+        throw new Error('VITE_SUPABASE_ANON_KEY is required for Supabase Edge Function requests.');
     }
 
+    headers['apikey'] = anonKey;
+    headers['Authorization'] = `Bearer ${anonKey}`;
     return headers;
 };
 

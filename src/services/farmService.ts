@@ -1,4 +1,4 @@
-import { isSupabaseAvailable, supabase, type Farm, type FarmInsert, type Geometry } from './supabase';
+import { supabase, type Farm, type FarmInsert, type Geometry } from './supabase';
 import { bbox, area, circle } from '@turf/turf';
 
 // Local storage key for farms
@@ -11,13 +11,6 @@ interface OfflineQueueEntry {
   payload: Record<string, unknown>;
   createdAt: string;
   lastError?: string;
-}
-
-/**
- * Generate a unique ID for farms
- */
-function generateId(): string {
-  return `farm-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 }
 
 /**
@@ -71,7 +64,7 @@ function enqueueOffline(entry: Omit<OfflineQueueEntry, 'id' | 'createdAt'>): voi
     const queue: OfflineQueueEntry[] = existing ? JSON.parse(existing) : [];
     queue.push({
       ...entry,
-      id: generateId(),
+      id: crypto.randomUUID(),
       createdAt: new Date().toISOString(),
     });
     localStorage.setItem(OFFLINE_TRACE_QUEUE_KEY, JSON.stringify(queue));
@@ -143,7 +136,7 @@ function calculateBounds(geometry: { type: 'Polygon' | 'MultiPolygon'; coordinat
 }
 
 /**
- * Save a farm polygon to localStorage
+ * Save a farm polygon to Supabase.
  */
 export async function saveFarm(farmData: FarmInsert): Promise<Farm | null> {
   try {
@@ -153,83 +146,55 @@ export async function saveFarm(farmData: FarmInsert): Promise<Farm | null> {
     // Calculate area if not provided
     const area_hectares = farmData.area_hectares || calculateArea(farmData.geometry);
 
-    if (isSupabaseAvailable() && supabase) {
-      const { data, error } = await supabase.rpc('upsert_farm_geojson', {
-        p_name: farmData.name,
-        p_geometry: farmData.geometry,
-        p_bounds: bounds,
-        p_area_hectares: area_hectares,
-        p_user_id: isUuid(farmData.user_id) ? farmData.user_id : null,
-      });
+    const { data, error } = await supabase.rpc('upsert_farm_geojson', {
+      p_name: farmData.name,
+      p_geometry: farmData.geometry,
+      p_bounds: bounds,
+      p_area_hectares: area_hectares,
+      p_user_id: isUuid(farmData.user_id) ? farmData.user_id : null,
+    });
 
-      if (!error && Array.isArray(data) && data[0]) {
-        const farm = normalizeFarm(data[0]);
-        mergeFarmIntoStorage(farm);
-        console.log('[FarmService] Farm saved to Supabase:', farm.id);
-        return farm;
-      }
-
-      console.warn('[FarmService] Supabase farm save failed; queueing offline fallback:', error?.message);
-      enqueueOffline({
-        type: 'farm_upsert',
-        payload: {
-          name: farmData.name,
-          geometry: farmData.geometry,
-          bounds,
-          area_hectares,
-        },
-        lastError: error?.message,
-      });
+    if (error) {
+      throw new Error(`Supabase farm save failed: ${error.message}`);
     }
 
-    const now = new Date().toISOString();
-    const newFarm: Farm = {
-      id: generateId(),
-      name: farmData.name,
-      geometry: farmData.geometry,
-      bounds,
-      area_hectares,
-      user_id: farmData.user_id || 'local-dev-user',
-      created_at: now,
-      updated_at: now,
-    };
+    if (!Array.isArray(data) || !data[0]) {
+      throw new Error('Supabase farm save returned no farm row.');
+    }
 
-    // Get existing farms and add the new one
-    mergeFarmIntoStorage(newFarm);
-
-    console.log('[FarmService] Farm saved to localStorage:', newFarm.id);
-    return newFarm;
+    const farm = normalizeFarm(data[0]);
+    mergeFarmIntoStorage(farm);
+    console.log('[FarmService] Farm saved to Supabase:', farm.id);
+    return farm;
   } catch (error) {
     console.error('Failed to save farm:', error);
-    return null;
+    throw error;
   }
 }
 
 /**
- * Get all farms from localStorage
+ * Get all farms from Supabase.
  */
 export async function getAllFarms(): Promise<Farm[]> {
   try {
-    if (isSupabaseAvailable() && supabase) {
-      const { data, error } = await supabase.rpc('list_farms_geojson');
-      if (!error && Array.isArray(data)) {
-        const remoteFarms = data.map(normalizeFarm);
-        if (remoteFarms.length > 0) {
-          saveFarmsToStorage(remoteFarms);
-        }
-        console.log('[FarmService] Retrieved', remoteFarms.length, 'farms from Supabase');
-        return remoteFarms;
-      }
-
-      console.warn('[FarmService] Supabase farm lookup failed; using local cache:', error?.message);
+    const { data, error } = await supabase.rpc('list_farms_geojson');
+    if (error) {
+      throw new Error(`Supabase farm lookup failed: ${error.message}`);
     }
 
-    const farms = getFarmsFromStorage();
-    console.log('[FarmService] Retrieved', farms.length, 'farms from localStorage');
-    return farms;
+    if (!Array.isArray(data)) {
+      throw new Error('Supabase farm lookup returned an invalid payload.');
+    }
+
+    const remoteFarms = data.map(normalizeFarm);
+    if (remoteFarms.length > 0) {
+      saveFarmsToStorage(remoteFarms);
+    }
+    console.log('[FarmService] Retrieved', remoteFarms.length, 'farms from Supabase');
+    return remoteFarms;
   } catch (error) {
     console.error('Failed to fetch farms:', error);
-    return [];
+    throw error;
   }
 }
 
@@ -238,23 +203,23 @@ export async function getAllFarms(): Promise<Farm[]> {
  */
 export async function getFarmById(id: string): Promise<Farm | null> {
   try {
-    if (isSupabaseAvailable() && supabase && isUuid(id)) {
-      const { data, error } = await supabase.rpc('get_farm_geojson', { p_id: id });
-      if (!error && Array.isArray(data) && data[0]) {
-        const farm = normalizeFarm(data[0]);
-        mergeFarmIntoStorage(farm);
-        return farm;
-      }
-
-      console.warn('[FarmService] Supabase farm-by-id lookup failed; using local cache:', error?.message);
+    if (!isUuid(id)) {
+      throw new Error(`Farm id must be a Supabase UUID, received: ${id}`);
     }
 
-    const farms = getFarmsFromStorage();
-    const farm = farms.find(f => f.id === id);
-    return farm || null;
+    const { data, error } = await supabase.rpc('get_farm_geojson', { p_id: id });
+    if (error) {
+      throw new Error(`Supabase farm-by-id lookup failed: ${error.message}`);
+    }
+    if (Array.isArray(data) && data[0]) {
+      const farm = normalizeFarm(data[0]);
+      mergeFarmIntoStorage(farm);
+      return farm;
+    }
+    return null;
   } catch (error) {
     console.error('Failed to fetch farm:', error);
-    return null;
+    throw error;
   }
 }
 

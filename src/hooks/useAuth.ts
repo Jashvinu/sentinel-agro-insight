@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { User, Session, AuthError } from '@supabase/supabase-js';
 import { useNavigate } from 'react-router-dom';
+import { supabase } from '@/services/supabase';
 
 interface AuthState {
   user: User | null;
@@ -8,20 +9,16 @@ interface AuthState {
   loading: boolean;
 }
 
-// Mock user for MVP mode - no login required
-const mvpDemoUser: User = {
-  id: 'mvp-demo-user',
-  email: 'demo@evergreenfarms.mvp',
+// Fallback for when anonymous auth is not enabled in the project
+const guestUser: User = {
+  id: 'guest-user',
+  email: 'guest@local',
   app_metadata: {},
-  user_metadata: { name: 'Evergreen Farms Demo' },
+  user_metadata: {},
   aud: 'authenticated',
   created_at: new Date().toISOString(),
 };
 
-/**
- * useAuth hook for MVP mode
- * Always returns the MVP demo user without requiring authentication
- */
 export function useAuth() {
   const [authState, setAuthState] = useState<AuthState>({
     user: null,
@@ -31,28 +28,48 @@ export function useAuth() {
   const navigate = useNavigate();
 
   useEffect(() => {
-    // MVP mode: immediately set demo user without any auth checks
-    console.log('[Auth] MVP mode - using demo user for Evergreen Farms');
-    setAuthState({
-      user: mvpDemoUser,
-      session: null,
-      loading: false,
+    const initAuth = async () => {
+      // Restore an existing session if present (e.g., returning visitor)
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session?.user) {
+        setAuthState({ user: session.user, session, loading: false });
+        return;
+      }
+
+      // Sign in anonymously — gives each visitor a unique UUID so farm data is
+      // properly scoped per user. Requires "Anonymous sign-ins" to be enabled in
+      // Supabase Auth settings. Falls back to guestUser if not enabled.
+      const { data, error } = await supabase.auth.signInAnonymously();
+      if (data?.user && !error) {
+        setAuthState({ user: data.user, session: data.session, loading: false });
+      } else {
+        // Anonymous auth not enabled: use guestUser so useAbeFarm can still
+        // fetch farms (list_farms_geojson returns null-user farms for anon callers)
+        setAuthState({ user: guestUser, session: null, loading: false });
+      }
+    };
+
+    initAuth();
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (session?.user) {
+        setAuthState({ user: session.user, session, loading: false });
+      }
     });
+
+    return () => subscription.unsubscribe();
   }, []);
 
-  // Disabled auth functions for MVP mode
   const signUp = async (_email: string, _password: string) => {
-    console.log('[Auth] MVP mode - signUp disabled');
     return { data: null, error: { message: 'MVP mode - authentication disabled' } as AuthError };
   };
 
   const signIn = async (_email: string, _password: string) => {
-    console.log('[Auth] MVP mode - signIn disabled, using demo user');
     return { data: null, error: { message: 'MVP mode - authentication disabled' } as AuthError };
   };
 
   const signOut = async () => {
-    console.log('[Auth] MVP mode - signOut disabled');
+    await supabase.auth.signOut();
     navigate('/');
   };
 
@@ -63,10 +80,3 @@ export function useAuth() {
     signOut,
   };
 }
-
-
-
-
-
-
-

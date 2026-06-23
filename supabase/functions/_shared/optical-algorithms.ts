@@ -287,6 +287,10 @@ export interface DiseaseIndicesResult {
   dwsImage: any;         // Disease Water Stress composite
   ndviCvImage: any;      // Canopy spatial heterogeneity (sheath blight proxy)
   ndviImage: any;
+  ribinirImage: any;     // RIBInir — (B7−B11)/(B4+B11), fixed from B8A→B11 (Tian et al. 2023)
+  ribiredImage: any;     // RIBIred — (B5−B8A)/(B4+B8A), raises with disease
+  redsiImage: any;       // REDSI — red-edge disease stress (cross-check baseline)
+  psriImage: any;        // PSRI — Plant Senescence Reflectance Index (Merzlyak et al. 1999)
 }
 
 /**
@@ -312,6 +316,28 @@ export interface DiseaseIndicesResult {
  * NDVI_CV (local coefficient of variation):
  *   = stdDev(NDVI, 30m kernel) / mean(NDVI, 30m kernel)
  *   Sheath blight disrupts canopy uniformity → elevated patchiness
+ *
+ * RIBInir (Rice Blast Index NIR — Tian et al. 2023, RSE):
+ *   Original: (ρ753 − ρ1102) / (ρ665 + ρ1102).  ρ1102 is in the SWIR1
+ *   water-absorption region. Fixed S2 approximation: B11 (1610nm, SWIR1) for
+ *   ρ1102 — physically correct (same region). B8A (865nm, NIR plateau) was wrong
+ *   (237nm off, different spectral behaviour). ρ753→B7 (783nm), ρ665→B4.
+ *   Healthy: B7 NIR > B11 SWIR1 → index ≈ +0.8–1.3. Blast lowers it as
+ *   mesophyll damage reduces NIR and desiccation raises SWIR1. Clamp [0, 2].
+ *
+ * RIBIred (Red-Edge BLB proxy — adapted from Tian et al. 2023):
+ *   (B5 − B8A) / (B4 + B8A). B8A (865nm) is correct here as a NIR reference.
+ *   Healthy: B5 << B8A → negative (~−0.31 observed). Disease RAISES index as
+ *   chlorophyll loss increases B5 (705nm) reflectance.
+ *
+ * PSRI (Plant Senescence Reflectance Index — Merzlyak et al. 1999):
+ *   PSRI = (B4 − B3) / B7. Elevated carotenoid:chlorophyll ratio = senescence /
+ *   foliar disease. Replaces HyMap-only RBBRI/RBBDI (not reproducible on S2)
+ *   as the BLB senescence signal. Healthy: negative (~−0.05). Diseased: positive.
+ *
+ * REDSI (Red-Edge Disease Stress Index — Zheng et al. 2018, Sensors):
+ *   Triangle area over B4(665)/B5(705)/B7(783); wheat-rust template that
+ *   transfers to foliar rice disease. Used as a cross-check baseline.
  */
 export async function calculateDiseaseIndices(
     harmonizedCollection: any,
@@ -328,36 +354,16 @@ export async function calculateDiseaseIndices(
 
     // RBVI — Sentinel-2 only (requires red-edge band B5)
     // Approximation: rho_816 ≈ B8, rho_736 ≈ B5, rho_724 ≈ B4
-    let rbviImage: any;
-    try {
-        rbviImage = B8.multiply(9.78)
-            .subtract(B5.divide(B4).multiply(2.08))
-            .clamp(-2, 5)
-            .rename('RBVI');
-    } catch {
-        // Landsat fallback: approximate with NDRE proxy
-        rbviImage = B8.subtract(B4).divide(B8.add(B4))
-            .rename('RBVI');
-    }
+    const rbviImage = B8.multiply(9.78)
+        .subtract(B5.divide(B4).multiply(2.08))
+        .clamp(-2, 5)
+        .rename('RBVI');
 
     // CIre = (B8 / B5) − 1
-    let cireImage: any;
-    try {
-        cireImage = B8.divide(B5).subtract(1).clamp(0, 10).rename('CIre');
-    } catch {
-        // Landsat fallback: GNDVI-based proxy
-        cireImage = B8.subtract(composite.select('green'))
-            .divide(B8.add(composite.select('green')))
-            .rename('CIre');
-    }
+    const cireImage = B8.divide(B5).subtract(1).clamp(0, 10).rename('CIre');
 
     // MTCI = (B8 − B5) / (B5 − B4)
-    let mtciImage: any;
-    try {
-        mtciImage = B8.subtract(B5).divide(B5.subtract(B4)).clamp(-5, 10).rename('MTCI');
-    } catch {
-        mtciImage = B8.subtract(B4).divide(B8.add(B4)).rename('MTCI');
-    }
+    const mtciImage = B8.subtract(B5).divide(B5.subtract(B4)).clamp(-5, 10).rename('MTCI');
 
     // DWS = 0.6 × NDMI + 0.4 × NMDI
     const ndmi = B8.subtract(B11).divide(B8.add(B11));
@@ -377,7 +383,45 @@ export async function calculateDiseaseIndices(
         .clamp(0, 2)
         .rename('NDVI_CV');
 
-    return { rbviImage, cireImage, mtciImage, dwsImage, ndviCvImage, ndviImage };
+    // ---- Published disease-specific indices (Sentinel-2 red-edge bands) ----
+    const B3  = composite.select('green');      // 560 nm
+    const B7  = composite.select('rededge3');   // 783 nm (≈ρ753)
+    const B8A = composite.select('nir2');        // 865 nm
+
+    // RIBInir: FIXED — B11 (SWIR1, 1610nm) replaces B8A (865nm, NIR plateau).
+    // B11 is in the SWIR1 water-absorption region, matching ρ1102 physically.
+    // Healthy: NIR (B7) > SWIR1 (B11) → positive ≈ +0.8–1.3. Clamp [0, 2].
+    const ribinirImage = B7.subtract(B11)
+        .divide(B4.add(B11))
+        .clamp(0, 2)
+        .rename('RIBInir');
+
+    // RIBIred: (B5 − B8A) / (B4 + B8A). B8A is correct here.
+    // Disease RAISES this index (less negative) as chlorophyll loss lifts B5.
+    const ribiredImage = B5.subtract(B8A)
+        .divide(B4.add(B8A))
+        .clamp(-1, 1)
+        .rename('RIBIred');
+
+    // REDSI — triangle area B4/B5/B7; λ gaps 40 & 118 nm.
+    const redsiImage = B7.subtract(B4).multiply(40)
+        .subtract(B5.subtract(B4).multiply(118))
+        .divide(B4.multiply(2).max(ee.Image(0.001)))
+        .clamp(-50, 50)
+        .rename('REDSI');
+
+    // PSRI (Plant Senescence Reflectance Index — Merzlyak et al. 1999):
+    //   PSRI = (B4 − B3) / B7. High = elevated carotenoid:chlorophyll = disease/senescence.
+    //   Replaces HyMap-only RBBRI/RBBDI as BLB senescence signal on S2.
+    const psriImage = B4.subtract(B3)
+        .divide(B7.max(ee.Image(0.001)))
+        .clamp(-1, 1)
+        .rename('PSRI');
+
+    return {
+        rbviImage, cireImage, mtciImage, dwsImage, ndviCvImage, ndviImage,
+        ribinirImage, ribiredImage, redsiImage, psriImage,
+    };
 }
 
 /**

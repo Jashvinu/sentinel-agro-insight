@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
-import { fetchWeatherApi } from 'openmeteo';
 import { useToast } from '@/hooks/useToast';
+import { buildApiUrl, getSupabaseFunctionHeaders } from '@/services/api';
 
 export interface WeatherData {
   hourly: {
@@ -19,6 +19,23 @@ export interface WeatherData {
     longitude: number;
     elevation: number;
     utcOffsetSeconds: number;
+  };
+}
+
+interface WeatherApiPayload {
+  data?: {
+    hourly: {
+      time: string[];
+      temperature_2m: number[];
+      rain: number[];
+      precipitation: number[];
+      apparent_temperature: number[];
+      snowfall: number[];
+      wind_speed_10m: number[];
+      cloud_cover: number[];
+      weather_code: number[];
+    };
+    location: WeatherData['location'];
   };
 }
 
@@ -49,63 +66,50 @@ export const useWeather = (): UseWeatherReturn => {
       const start = startDate || new Date().toISOString().split('T')[0];
       const end = endDate || new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
 
-      const params = {
-        latitude,
-        longitude,
-        hourly: [
-          "temperature_2m", 
-          "precipitation", 
-          "apparent_temperature", 
-          "wind_speed_10m", 
-          "cloud_cover", 
-          "weather_code"
-        ],
+      const params = new URLSearchParams({
+        latitude: String(latitude),
+        longitude: String(longitude),
         start_date: start,
         end_date: end,
-      };
+      });
 
-      const url = "https://api.open-meteo.com/v1/forecast";
-      const responses = await fetchWeatherApi(url, params);
+      const response = await fetch(buildApiUrl(`/weather?${params}`), {
+        headers: {
+          ...getSupabaseFunctionHeaders(),
+        },
+      });
 
-      // Process first location
-      const response = responses[0];
+      if (!response.ok) {
+        throw new Error(`Weather API failed: ${response.status} ${await response.text()}`);
+      }
 
-      // Get location attributes
-      const responseLatitude = response.latitude();
-      const responseLongitude = response.longitude();
-      const elevation = response.elevation();
-      const utcOffsetSeconds = response.utcOffsetSeconds();
-
-      const hourly = response.hourly()!;
+      const payload = (await response.json()) as WeatherApiPayload;
+      const remote = payload.data;
+      if (!remote) {
+        throw new Error('Weather API returned no data payload.');
+      }
 
       // Process weather data
       const weatherData: WeatherData = {
         hourly: {
-          time: [...Array((Number(hourly.timeEnd()) - Number(hourly.time())) / hourly.interval())].map(
-            (_, i) => new Date((Number(hourly.time()) + i * hourly.interval() + utcOffsetSeconds) * 1000)
-          ),
-          temperature_2m: hourly.variables(0)!.valuesArray(),
-          rain: hourly.variables(1)!.valuesArray(), // Using precipitation data
-          precipitation: hourly.variables(1)!.valuesArray(), // Same as rain for compatibility
-          apparent_temperature: hourly.variables(2)!.valuesArray(),
-          snowfall: new Float32Array(hourly.variables(0)!.valuesArray().length), // Not requested, use empty array
-          wind_speed_10m: hourly.variables(3)!.valuesArray(),
-          cloud_cover: hourly.variables(4)!.valuesArray(),
-          weather_code: hourly.variables(5)!.valuesArray(),
+          time: remote.hourly.time.map((value) => new Date(value)),
+          temperature_2m: new Float32Array(remote.hourly.temperature_2m),
+          rain: new Float32Array(remote.hourly.rain),
+          precipitation: new Float32Array(remote.hourly.precipitation),
+          apparent_temperature: new Float32Array(remote.hourly.apparent_temperature),
+          snowfall: new Float32Array(remote.hourly.snowfall),
+          wind_speed_10m: new Float32Array(remote.hourly.wind_speed_10m),
+          cloud_cover: new Float32Array(remote.hourly.cloud_cover),
+          weather_code: new Float32Array(remote.hourly.weather_code),
         },
-        location: {
-          latitude: responseLatitude,
-          longitude: responseLongitude,
-          elevation,
-          utcOffsetSeconds,
-        }
+        location: remote.location,
       };
 
       setData(weatherData);
       
       toast({
         title: "Weather data updated",
-        description: `Retrieved forecast for ${responseLatitude.toFixed(2)}°N ${responseLongitude.toFixed(2)}°E`,
+        description: `Retrieved forecast for ${remote.location.latitude.toFixed(2)}°N ${remote.location.longitude.toFixed(2)}°E`,
       });
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Failed to fetch weather data';

@@ -137,7 +137,12 @@ const ProblemItem: React.FC<ProblemItemProps> = ({ problem, farmAvg }) => {
   const label = getIndexLabel(problem.index);
   const thresholds = getIndexThresholds(problem.index);
   const farmDeltaPercent = farmAvg ? ((problem.currentValue - farmAvg) / farmAvg) * 100 : 0;
-  const farmDeltaIsBetter = problem.currentValue >= farmAvg && problem.currentValue >= thresholds.low;
+  const isHighIssue = problem.direction === 'high';
+  const farmDeltaIsBetter = farmAvg !== undefined
+    ? isHighIssue
+      ? problem.currentValue <= farmAvg && problem.currentValue <= problem.threshold
+      : problem.currentValue >= farmAvg && problem.currentValue >= thresholds.low
+    : false;
   const trendSuffix = problem.changeUnit === 'points' ? ' pts' : '%';
 
   const getIcon = () => {
@@ -179,7 +184,7 @@ const ProblemItem: React.FC<ProblemItemProps> = ({ problem, farmAvg }) => {
             <span className="font-medium">{problem.currentValue.toFixed(1)}</span>
           </div>
           <div>
-            <span className="text-muted-foreground">Threshold: </span>
+            <span className="text-muted-foreground">{isHighIssue ? 'Max: ' : 'Min: '}</span>
             <span className="font-medium">{problem.threshold}</span>
           </div>
           {farmAvg !== undefined && farmAvg !== 0 && (
@@ -220,9 +225,9 @@ const ProblemItem: React.FC<ProblemItemProps> = ({ problem, farmAvg }) => {
 function getRecommendation(problem: CellProblem): string {
   const recommendations: Record<string, Record<string, string>> = {
     nitrogen: {
-      threshold: 'Apply nitrogen fertilizer (50-100 kg N/ha recommended)',
-      trend: 'Monitor nitrogen levels and consider split application',
-      both: 'Urgent: Apply nitrogen fertilizer immediately',
+      threshold: 'Verify with a soil test, then plan crop-stage nitrogen correction with local advisory guidance',
+      trend: 'Check recent irrigation and crop-stage stress before adjusting nitrogen',
+      both: 'Urgent: soil-test this zone and review nitrogen plan with a local advisor',
     },
     moisture: {
       threshold: 'Increase irrigation frequency or duration',
@@ -235,9 +240,26 @@ function getRecommendation(problem: CellProblem): string {
       both: 'Scout field immediately for stress causes',
     },
     phosphorus: {
-      threshold: 'Apply phosphorus fertilizer (30-50 kg P₂O₅/ha)',
-      trend: 'Consider soil pH adjustment for better P availability',
-      both: 'Apply phosphorus and check soil pH',
+      threshold: 'Verify phosphorus with a soil test; check pH because availability can be constrained',
+      trend: 'Watch this zone and compare with soil-test phosphorus before applying inputs',
+      both: 'Prioritize soil-test confirmation for phosphorus and pH before treatment',
+    },
+    potassium: {
+      threshold: 'Verify potassium with a soil test, especially where dry stress overlaps',
+      trend: 'Monitor moisture and crop vigor before changing potassium inputs',
+      both: 'Prioritize soil-test potassium confirmation and moisture review',
+    },
+    ph: {
+      threshold: problem.direction === 'high'
+        ? 'Confirm alkaline pH with a soil test and review nutrient lockup risk'
+        : 'Confirm acidic pH with a soil test and review amendment options locally',
+      trend: 'Track pH with field/lab testing before action',
+      both: 'Confirm pH locally before any amendment decision',
+    },
+    salinity: {
+      threshold: 'Confirm salinity with EC testing and review irrigation water quality/drainage',
+      trend: 'Monitor salt buildup risk and compare with EC field readings',
+      both: 'Urgent: verify EC and inspect drainage/irrigation water quality',
     },
   };
 

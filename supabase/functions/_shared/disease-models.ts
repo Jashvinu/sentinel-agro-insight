@@ -36,6 +36,11 @@ export interface SpectralFeatures {
   dws: number;            // [-1, 1]  — Disease Water Stress composite
   moisture: number;       // [0, 100] — NDMI-derived volumetric moisture %
   ndvi_baseline: number;  // [−1, 1]  — 14-day historical mean NDVI for anomaly detection
+  ribinir?: number;       // [0, 2]   — RIBInir (B7−B11)/(B4+B11), fixed S2 approximation
+  ribired?: number;       // [−1, 1]  — RIBIred (B5−B8A)/(B4+B8A), raises with disease
+  redsi?: number;         // [−50,50] — REDSI red-edge disease stress (cross-check)
+  psri?: number;          // [−1, 1]  — PSRI senescence index (Merzlyak et al. 1999)
+  thermal_stress?: number;// [0, 1]   — thermal water-stress proxy (Landsat/MODIS LST)
 }
 
 /** Weather epidemiological inputs (sourced from Open-Meteo 7-day lookback) */
@@ -156,6 +161,70 @@ function cireAnomaly(cire: number): number {
 }
 
 /**
+ * RIBInir anomaly (Tian et al. 2023, RSE — B11-fixed S2 approximation).
+ * Formula: (B7−B11)/(B4+B11). B11 (SWIR1, 1610nm) correctly approximates ρ1102;
+ * the previous B8A (865nm, NIR plateau) was in the wrong spectral region.
+ * Healthy paddy: NIR > SWIR1 → index ≈ +0.8–1.3. Blast drops it toward 0 as
+ * mesophyll damage reduces B7 and leaf desiccation raises B11. Absent → 0.
+ */
+function ribinirAnomaly(ribinir: number | undefined): number {
+  if (ribinir === undefined || Number.isNaN(ribinir)) return 0;
+  return clamp01((0.70 - ribinir) / 0.50);  // 0 at ≥0.70 (healthy); 1 at ≤0.20 (diseased)
+}
+
+/**
+ * RIBIred anomaly — (B5−B8A)/(B4+B8A). Observed healthy-paddy baseline ≈ −0.31.
+ * Disease RAISES the index (less negative) as chlorophyll loss increases B5 (705nm)
+ * reflectance. Direction fixed: anomaly fires when the index rises above baseline.
+ * RBBRI/RBBDI are HyMap-only and cannot be reproduced on 10-band S2; PSRI
+ * (psriAnomaly) serves as the BLB senescence signal instead.
+ */
+function ribiredAnomaly(ribired: number | undefined): number {
+  if (ribired === undefined || Number.isNaN(ribired)) return 0;
+  return clamp01((ribired + 0.31) / 0.25);  // 0 at ≤−0.31 (healthy); 1 at ≥−0.06 (diseased)
+}
+
+/**
+ * PSRI anomaly (Plant Senescence Reflectance Index — Merzlyak et al. 1999).
+ * PSRI = (B4 − B3) / B7. Healthy canopy: green > red → PSRI ≈ −0.05 to −0.15.
+ * Disease / senescence elevates carotenoid:chlorophyll ratio → PSRI rises toward 0+.
+ * Primary BLB senescence signal on S2, replacing HyMap-only RBBRI/RBBDI. Absent → 0.
+ */
+function psriAnomaly(psri: number | undefined): number {
+  if (psri === undefined || Number.isNaN(psri)) return 0;
+  return clamp01((psri - 0.05) / 0.25);  // 0 at ≤0.05 (healthy); 1 at ≥0.30 (diseased)
+}
+
+/**
+ * REDSI anomaly (Zheng et al. 2018). Disease shrinks the red-edge triangle area,
+ * lowering REDSI. Low-weight cross-check only; PROVISIONAL center. Absent → 0.
+ */
+function redsiAnomaly(redsi: number | undefined): number {
+  if (redsi === undefined || Number.isNaN(redsi)) return 0;
+  return clamp01((8 - redsi) / 16);
+}
+
+/**
+ * Thermal water-stress gate (Landsat/MODIS LST). Returns a multiplier in
+ * [floor, 1] that SUPPRESSES disease scores when a cell shows the abiotic
+ * water-stress signature (hot + dry canopy + no spatial patchiness) rather than
+ * a disease signature. Thermal never RAISES a disease score (per research doc).
+ * Also reports whether the cell looks likely-abiotic.
+ */
+export function thermalConfounder(spec: SpectralFeatures): { mult: number; likely_abiotic: boolean } {
+  const thermal = spec.thermal_stress;
+  if (thermal === undefined || Number.isNaN(thermal)) return { mult: 1, likely_abiotic: false };
+  const dryCanopy   = clamp01((20 - spec.moisture) / 20);   // low moisture
+  const uniform     = clamp01((0.20 - spec.ndvi_cv) / 0.20); // low patchiness = not disease-like
+  // Water-stress signature: hot AND dry AND spatially uniform decline.
+  const waterStress = clamp01(thermal * 0.5 + dryCanopy * 0.3 + uniform * 0.2);
+  const likely_abiotic = waterStress >= 0.6;
+  // Suppress down to a 0.55 floor at full water-stress signature.
+  const mult = 1 - waterStress * 0.45;
+  return { mult, likely_abiotic };
+}
+
+/**
  * Weather blast risk (Yoshino model approximation):
  * Optimal blast: 20–28 °C with > 10 h leaf wetness per day
  */
@@ -202,31 +271,39 @@ export function riceBlastRisk(
   weather: WeatherFeatures,
   stage: GrowthStage = 'tillering',
 ): DiseaseRiskScore {
-  const spectralAnomaly = (rbviAnomaly(spec.rbvi) * 0.50)
-    + (cireAnomaly(spec.cire) * 0.30)
-    + (clamp01((3.0 - spec.mtci) / 3.0) * 0.20);
+  // Cross-validate the bespoke RBVI against the published RIBInir blast index
+  // rather than trusting either alone, with CIre/MTCI as chlorophyll support.
+  const spectralAnomaly = (rbviAnomaly(spec.rbvi) * 0.35)
+    + (ribinirAnomaly(spec.ribinir) * 0.30)
+    + (cireAnomaly(spec.cire) * 0.20)
+    + (clamp01((3.0 - spec.mtci) / 3.0) * 0.15);
 
   const ndviDecline   = ndviAnomaly(spec.ndvi, spec.ndvi_baseline);
   const moistureScore = clamp01((spec.dws + 1) / 2);          // DWS: remap [-1,1] → [0,1]
   const weatherScore  = blastWeatherRisk(weather);
+  const redsiCheck    = redsiAnomaly(spec.redsi);             // low-weight cross-check
   const stageMult     = RICE_BLAST_STAGE[stage];
 
   const rawScore = (
-    spectralAnomaly * 0.45
-    + ndviDecline   * 0.20
+    spectralAnomaly * 0.42
+    + ndviDecline   * 0.18
     + moistureScore * 0.15
     + weatherScore  * 0.15
+    + redsiCheck    * 0.05
     + stageMult     * 0.05
   );
 
-  const score = clamp01(rawScore * stageMult);
+  // Thermal gate: suppress (never raise) when the cell looks abiotic water-stress.
+  const { mult: thermalMult } = thermalConfounder(spec);
+  const score = clamp01(rawScore * stageMult * thermalMult);
 
   const signals: string[] = [];
-  if (rbviAnomaly(spec.rbvi) > 0.30)  signals.push('RBVI red-edge anomaly');
-  if (cireAnomaly(spec.cire) > 0.30)  signals.push('CIre chlorophyll decline');
-  if (ndviDecline > 0.25)             signals.push('NDVI decline vs baseline');
-  if (weatherScore > 0.40)            signals.push('blast-conducive weather');
-  if (moistureScore > 0.55)           signals.push('wet canopy');
+  if (rbviAnomaly(spec.rbvi) > 0.30)      signals.push('RBVI red-edge anomaly');
+  if (ribinirAnomaly(spec.ribinir) > 0.30) signals.push('RIBInir blast index anomaly');
+  if (cireAnomaly(spec.cire) > 0.30)      signals.push('CIre chlorophyll decline');
+  if (ndviDecline > 0.25)                 signals.push('NDVI decline vs baseline');
+  if (weatherScore > 0.40)                signals.push('blast-conducive weather');
+  if (moistureScore > 0.55)               signals.push('wet canopy');
 
   return {
     disease: 'rice_blast',
@@ -259,7 +336,8 @@ export function sheathBlightRisk(
     + warmScore   * 0.15
   );
 
-  const score = clamp01(rawScore * stageMult);
+  const { mult: thermalMult } = thermalConfounder(spec);
+  const score = clamp01(rawScore * stageMult * thermalMult);
 
   const signals: string[] = [];
   if (heterogeneity > 0.30)    signals.push('NDVI spatial patchiness');
@@ -286,22 +364,29 @@ export function blbRisk(
   stage: GrowthStage = 'tillering',
 ): DiseaseRiskScore {
   const waterSignal  = clamp01((spec.dws + 1) / 2);
+  const redEdgeProxy = ribiredAnomaly(spec.ribired);
+  const psriSignal   = psriAnomaly(spec.psri);    // BLB senescence: replaces RBBRI/RBBDI
   const ndviDecline  = ndviAnomaly(spec.ndvi, spec.ndvi_baseline);
   const wetScore     = wetCanopyRisk(weather);
-  const stormScore   = clamp01(weather.total_rain_mm / 60);   // storm/flood events drive BLB
+  const stormScore   = clamp01(weather.total_rain_mm / 60);
   const stageMult    = BLB_STAGE[stage];
 
   const rawScore = (
-    waterSignal * 0.35
-    + ndviDecline * 0.25
-    + wetScore    * 0.25
-    + stormScore  * 0.15
+    waterSignal    * 0.25
+    + redEdgeProxy * 0.10
+    + psriSignal   * 0.10
+    + ndviDecline  * 0.20
+    + wetScore     * 0.25
+    + stormScore   * 0.10
   );
 
-  const score = clamp01(rawScore * stageMult);
+  const { mult: thermalMult } = thermalConfounder(spec);
+  const score = clamp01(rawScore * stageMult * thermalMult);
 
   const signals: string[] = [];
   if (waterSignal > 0.50)    signals.push('water-stress index elevated');
+  if (redEdgeProxy > 0.30)   signals.push('RIBIred red-edge anomaly');
+  if (psriSignal > 0.30)     signals.push('PSRI senescence signal');
   if (ndviDecline > 0.20)    signals.push('NDVI decline');
   if (stormScore > 0.40)     signals.push('high rainfall event');
   if (wetScore > 0.40)       signals.push('wet canopy');
@@ -338,7 +423,8 @@ export function downyMildewRisk(
     + moistureSignal * 0.15
   );
 
-  const score = clamp01(rawScore * stageMult);
+  const { mult: thermalMult } = thermalConfounder(spec);
+  const score = clamp01(rawScore * stageMult * thermalMult);
 
   const signals: string[] = [];
   if (ndviDecline > 0.20)     signals.push('NDVI early-season decline');
@@ -369,20 +455,24 @@ export function leafSpotRisk(
   const ndviDecline    = ndviAnomaly(spec.ndvi, spec.ndvi_baseline);
   const wetScore       = wetCanopyRisk(weather);
   const dwsSignal      = clamp01((spec.dws + 1) / 2);
+  const redsiCheck     = redsiAnomaly(spec.redsi);   // red-edge foliar cross-check
   const stageMult      = LEAF_SPOT_STAGE[stage];
 
   const rawScore = (
     heterogeneity * 0.30
-    + ndviDecline * 0.30
+    + ndviDecline * 0.25
     + wetScore    * 0.25
     + dwsSignal   * 0.15
+    + redsiCheck  * 0.05
   );
 
-  const score = clamp01(rawScore * stageMult);
+  const { mult: thermalMult } = thermalConfounder(spec);
+  const score = clamp01(rawScore * stageMult * thermalMult);
 
   const signals: string[] = [];
   if (heterogeneity > 0.25)  signals.push('NDVI spatial patchiness');
   if (ndviDecline > 0.20)    signals.push('NDVI decline');
+  if (redsiCheck > 0.30)     signals.push('REDSI red-edge stress');
   if (wetScore > 0.35)       signals.push('wet canopy / rainfall');
 
   return {
@@ -470,6 +560,76 @@ export function scoreCropDiseases(
     top_disease: top?.score > 0.10 ? top.disease : null,
     scout_priority: severity(composite),
   };
+}
+
+// ---------------------------------------------------------------------------
+// ML model hook (scaffold — no trained model yet)
+// ---------------------------------------------------------------------------
+
+/**
+ * JSON-coefficient schema a Colab-trained model exports to (see
+ * ml/disease_feature_export.ipynb). Kept intentionally simple so inference runs
+ * in pure TypeScript inside this Deno edge function — no Python runtime, no ONNX.
+ *
+ * `logistic`: per-disease linear-logistic coefficients over the named features.
+ *   score = sigmoid(bias + Σ coef[f] · feature[f])
+ * Extend with a tree variant later if a random forest outperforms.
+ */
+export interface DiseaseModelJSON {
+  version: string;
+  trained_at: string;
+  type: 'logistic';
+  features: string[];                              // ordered feature names
+  models: Partial<Record<DiseaseName, { bias: number; coef: number[] }>>;
+}
+
+/** Feature vector handed to a trained model (mirrors the exported Colab schema). */
+function featureVector(spec: SpectralFeatures, weather: WeatherFeatures, features: string[]): number[] {
+  const lookup: Record<string, number> = {
+    ndvi: spec.ndvi,
+    ndvi_cv: spec.ndvi_cv,
+    rbvi: spec.rbvi,
+    cire: spec.cire,
+    mtci: spec.mtci,
+    dws: spec.dws,
+    moisture: spec.moisture,
+    ndvi_baseline: spec.ndvi_baseline,
+    ribinir: spec.ribinir ?? 0,
+    ribired: spec.ribired ?? 0,
+    redsi: spec.redsi ?? 0,
+    psri: spec.psri ?? 0,
+    thermal_stress: spec.thermal_stress ?? 0,
+    hours_temp_20_28c: weather.hours_temp_20_28c,
+    leaf_wetness_hours: weather.leaf_wetness_hours,
+    max_rh_pct: weather.max_rh_pct,
+    total_rain_mm: weather.total_rain_mm,
+    mean_temp_c: weather.mean_temp_c,
+  };
+  return features.map((f) => lookup[f] ?? 0);
+}
+
+function sigmoid(z: number): number {
+  return 1 / (1 + Math.exp(-z));
+}
+
+/**
+ * Score a disease with a trained JSON model if one is supplied, else return null
+ * so callers fall back to the hand-tuned heuristic models. This is the drop-in
+ * seam: once labels accrue (from farmer_photo_submissions.diagnosis_result) and a
+ * model is trained in Colab, load the JSON and pass it here — no other change.
+ */
+export function mlDiseaseScore(
+  disease: DiseaseName,
+  spec: SpectralFeatures,
+  weather: WeatherFeatures,
+  model: DiseaseModelJSON | null,
+): number | null {
+  if (!model || model.type !== 'logistic') return null;
+  const m = model.models[disease];
+  if (!m) return null;
+  const x = featureVector(spec, weather, model.features);
+  const z = m.bias + m.coef.reduce((s, c, i) => s + c * (x[i] ?? 0), 0);
+  return clamp01(sigmoid(z));
 }
 
 /** Convert a text growth-stage string (from frontend) to GrowthStage enum */

@@ -1,20 +1,24 @@
 import { useEffect, useState } from 'react';
 import { useAuth } from './useAuth';
 import { getAllFarms } from '@/services/farmService';
+import type { Geometry } from '@/services/supabase';
 
 interface Farm {
   id: string;
   name: string;
-  geometry: any;
+  geometry: Geometry;
   area_hectares?: number;
+  crop?: string;
+  crop_type?: string;
+  cropType?: string;
+  primary_crop?: string;
 }
 
 const ACTIVE_FARM_KEY = 'activeFarmId';
 
 /**
  * Hook to get farm data. The "active" farm is whichever the user most recently
- * saved (id stored in localStorage under `activeFarmId`). Falls back to the
- * most recently created farm in storage when no active id is set.
+ * saved in Supabase (id stored in localStorage under `activeFarmId`).
  */
 export function useAbeFarm() {
   const { user } = useAuth();
@@ -38,40 +42,16 @@ export function useAbeFarm() {
       setError(null);
       try {
         const allFarms = await getAllFarms();
-
-        // Merge any polygons saved via the legacy "savedPolygons" key as well.
-        const savedPolygonsStr = localStorage.getItem('savedPolygons');
-        if (savedPolygonsStr) {
-          try {
-            const savedPolygons = JSON.parse(savedPolygonsStr);
-            savedPolygons.forEach((polygon: any) => {
-              if (!allFarms.find((f) => f.id === polygon.id)) {
-                allFarms.push({
-                  id: polygon.id,
-                  name: polygon.name,
-                  geometry: polygon.geojson?.geometry || polygon.geometry,
-                  area_hectares: polygon.area_hectares || 0,
-                  user_id: 'local-dev-user',
-                  created_at: polygon.createdAt || new Date().toISOString(),
-                  updated_at: new Date().toISOString(),
-                });
-              }
-            });
-          } catch (e) {
-            console.warn('[useAbeFarm] Could not parse savedPolygons:', e);
-          }
-        }
-
         setFarms(allFarms as Farm[]);
 
         const activeId = localStorage.getItem(ACTIVE_FARM_KEY);
         const active = activeId ? allFarms.find((f) => f.id === activeId) : undefined;
-        const fallback = [...allFarms].sort((a, b) => {
+        const latestFarm = [...allFarms].sort((a, b) => {
           const aTime = a.created_at ? Date.parse(a.created_at) : 0;
           const bTime = b.created_at ? Date.parse(b.created_at) : 0;
           return bTime - aTime;
         })[0];
-        const chosen = active || fallback;
+        const chosen = active || latestFarm;
 
         if (chosen) {
           setFarmId(chosen.id);

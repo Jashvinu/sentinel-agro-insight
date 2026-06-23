@@ -4,29 +4,23 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL?.trim() || '';
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY?.trim() || '';
 
-// Check if Supabase is configured
 const isSupabaseConfigured = Boolean(supabaseUrl && supabaseAnonKey);
 
 if (!isSupabaseConfigured) {
-  console.warn(
-    '[Supabase] Not configured - using local Express server instead. ' +
-    'Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to enable Supabase.'
+  throw new Error(
+    'Supabase is required. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY; generated or local-only data is not supported.'
   );
 }
 
-// Create Supabase client only if configured, otherwise create a mock
-export const supabase: SupabaseClient | null = isSupabaseConfigured
-  ? createClient(supabaseUrl, supabaseAnonKey, {
-      auth: {
-        persistSession: true,
-        autoRefreshToken: true,
-        detectSessionInUrl: true,
-      },
-    })
-  : null;
+export const supabase: SupabaseClient = createClient(supabaseUrl, supabaseAnonKey, {
+  auth: {
+    persistSession: true,
+    autoRefreshToken: true,
+    detectSessionInUrl: true,
+  },
+});
 
-// Helper to check if Supabase is available
-export const isSupabaseAvailable = (): boolean => supabase !== null;
+export const isSupabaseAvailable = (): boolean => true;
 
 // Database types
 export type Geometry = 
@@ -61,5 +55,3 @@ export interface FarmInsert {
   area_hectares?: number;
   user_id?: string;
 }
-
-

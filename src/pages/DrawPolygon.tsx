@@ -416,6 +416,9 @@ const DrawPolygon: React.FC<PolygonDrawingPageProps> = () => {
                 description: `"${polygonName.trim()}" with ${drawnPolygons.length} polygon${drawnPolygons.length > 1 ? 's' : ''} has been saved successfully.`,
             });
 
+            // Make newly drawn farm the active one so diagnostics picks it up
+            localStorage.setItem('activeFarmId', savedFarm.id);
+
             // Navigate back to main page
             navigate('/');
         } catch (error) {
