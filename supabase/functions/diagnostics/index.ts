@@ -92,7 +92,7 @@ const SATELLITES = {
 
 function scaleSentinel2Bands(image: any, config: any): any {
   return image
-    .select(['B2', 'B3', 'B4', 'B8', 'B11', 'B12'])
+    .select(['B2', 'B3', 'B4', 'B5', 'B8', 'B11', 'B12'])
     .multiply(config.scaleFactor)
     .clamp(0, 1)
     .toFloat();
@@ -115,8 +115,13 @@ function scaleLandsatBands(image: any, config: any): any {
 }
 
 function harmonizeLandsat(image: any, config: any): any {
+  // Add a masked B5 placeholder so merged S2+Landsat collections always have B5.
+  // CIre/NDRE will be valid only where real S2 B5 data exists.
+  // Band order MUST match S2 ['B2','B3','B4','B5','B8','B11','B12'] for homogeneous merge.
   const scaled = scaleLandsatBands(image, config)
-    .rename(['B2', 'B3', 'B4', 'B8', 'B11', 'B12']);
+    .rename(['B2', 'B3', 'B4', 'B8', 'B11', 'B12'])
+    .addBands(ee.Image.constant(0).rename('B5').updateMask(ee.Image.constant(0)))
+    .select(['B2', 'B3', 'B4', 'B5', 'B8', 'B11', 'B12']);
 
   const propertiesToRemove = [
     'system:bands',
@@ -244,7 +249,7 @@ const INDEX_CONFIDENCE: Record<string, DiagnosticConfidence> = {
   salinity: 'low',
 };
 
-const NUTRIENT_MODEL_VERSION = 'npk-soil-crop-threshold-v3';
+const NUTRIENT_MODEL_VERSION = 'npk-soil-crop-threshold-v4-cire';
 const NUTRIENT_MODEL_REFERENCES = [
   'Dianati et al. 2025, Scientific Reports, doi:10.1038/s41598-025-25034-z',
   'Li et al. 2023, Science of The Total Environment, doi:10.1016/j.scitotenv.2023.161421',
@@ -385,7 +390,19 @@ function calculateSpectralFeatures(image: any): Record<string, any> {
     { NIR: nir, RED: red, BLUE: blue }
   ).rename('EVI');
 
-  return { ndvi, gndvi, ndmi, swirBalance, bsi, savi, evi };
+  // CIre (Red-Edge Chlorophyll Index) and NDRE — Sentinel-2 only (B5 = 705nm).
+  // CIre = (B8/B5) − 1. Healthy rice: 3.5–7. Deficient: < 2.5. Excess: > 8.
+  // NDRE = (B8 − B5) / (B8 + B5). Range ~0.2 (deficient) – 0.55 (sufficient).
+  // Landsat has a masked-zero B5 placeholder; CIre/NDRE are valid only for S2 pixels.
+  const rededge = image.select('B5').unmask(0);
+  const rededgeSafe = rededge.max(ee.Image(0.001));
+  const hasSensor = rededge.gt(0); // true only where real S2 B5 data exists
+  const cire = nir.divide(rededgeSafe).subtract(1).clamp(0, 15)
+    .updateMask(hasSensor).rename('CIre');
+  const ndre = nir.subtract(rededge).divide(nir.add(rededgeSafe)).clamp(0, 1)
+    .updateMask(hasSensor).rename('NDRE');
+
+  return { ndvi, gndvi, ndmi, swirBalance, bsi, savi, evi, cire, ndre };
 }
 
 // Index calculation functions
@@ -403,14 +420,35 @@ const INDEX_CALCULATORS: Record<string, (image: any) => any> = {
   },
   nitrogen: (image: any) => {
     const f = calculateSpectralFeatures(image);
-    // Satellite nutrient sufficiency score (0-100), not lab kg/ha.
-    // Weighted toward green/red/NIR chlorophyll proxies with moisture as stress context.
-    return weightedScore([
-      { image: scoreFromRange(f.gndvi, -0.05, 0.72), weight: 0.34 },
-      { image: scoreFromRange(f.ndvi, -0.05, 0.85), weight: 0.24 },
-      { image: scoreFromRange(f.evi, -0.05, 0.65), weight: 0.22 },
-      { image: scoreFromRange(f.ndmi, -0.35, 0.45), weight: 0.20 },
-    ], 'nitrogen');
+    // N-sufficiency score (0–100 proxy), not lab kg/ha.
+    //
+    // S2 path (primary — uses red-edge band B5):
+    //   CIre = (B8/B5) − 1. Rice: deficient < 2.5; sufficient 3.5–7. Weight 0.35.
+    //   NDRE = (B8−B5)/(B8+B5). Range 0.2–0.55. Weight 0.25.
+    //   GNDVI: broadband complement. Weight 0.22.
+    //   NDMI: moisture context (drought mimics N deficiency). Weight 0.18.
+    //
+    // Landsat fallback (B5 masked → renormalise to GNDVI+NDMI only):
+    //   GNDVI weight 0.55, NDMI weight 0.45 (proportional to their S2-path shares).
+    const cireScore  = scoreFromRange(f.cire,  0.5,  8.0);   // masked on Landsat
+    const ndreScore  = scoreFromRange(f.ndre,  0.10, 0.58);  // masked on Landsat
+    const gndviScore = scoreFromRange(f.gndvi, -0.05, 0.72);
+    const ndmiScore  = scoreFromRange(f.ndmi,  -0.35, 0.45);
+
+    // S2 score (fully masked where CIre/NDRE are unavailable)
+    const s2Score = cireScore.multiply(0.35)
+      .add(ndreScore.multiply(0.25))
+      .add(gndviScore.multiply(0.22))
+      .add(ndmiScore.multiply(0.18))
+      .clamp(0, 100);
+
+    // Landsat fallback (valid everywhere)
+    const landsatScore = gndviScore.multiply(0.55)
+      .add(ndmiScore.multiply(0.45))
+      .clamp(0, 100);
+
+    // Where S2 red-edge exists use s2Score; fill masked pixels with landsatScore
+    return s2Score.unmask(landsatScore).rename('nitrogen');
   },
   moisture: (image: any) => {
     const nir = image.select('B8');
@@ -877,6 +915,13 @@ async function processIndex(
   }
 
   return { index, result, problem };
+}
+
+function getCurrentSeason(): string {
+  const month = new Date().getMonth() + 1; // 1-12
+  if (month >= 6 && month <= 11) return 'kharif'; // Jun–Nov monsoon
+  if (month >= 12 || month <= 2) return 'rabi';   // Dec–Feb dry
+  return 'summer';                                  // Mar–May
 }
 
 Deno.serve(async (req) => {
