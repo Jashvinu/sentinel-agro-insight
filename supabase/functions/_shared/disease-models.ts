@@ -563,6 +563,198 @@ export function scoreCropDiseases(
 }
 
 // ---------------------------------------------------------------------------
+// Weather-First Combiner (Layer 1 × Layer 2)
+// ---------------------------------------------------------------------------
+
+export type ConfidenceLevel = 'low' | 'medium' | 'medium-high' | 'high';
+export type PrimaryDriver = 'weather' | 'satellite' | 'both' | 'abiotic';
+
+export interface CalibratedRiskOutput {
+  disease: DiseaseName;
+  weather_pressure: number;      // [0,1] from weather-pressure.ts
+  satellite_response: number;    // [0,1] from remote-sensing-features.ts
+  abiotic_probability: number;   // [0,1] — if high, suppress biotic signal
+  final_risk: number;            // [0,1] calibrated combined score
+  confidence: ConfidenceLevel;
+  primary_driver: PrimaryDriver;
+  scout_priority: 'low' | 'medium' | 'high';
+}
+
+export interface FinalRiskOutput {
+  diseases: CalibratedRiskOutput[];
+  composite_risk: number;
+  top_disease: DiseaseName | null;
+  overall_confidence: ConfidenceLevel;
+  overall_driver: PrimaryDriver;
+  scout_priority: 'low' | 'medium' | 'high';
+  forecast_3d_risk: number;
+  forecast_7d_risk: number;
+  spray_window_flag: boolean;
+  advisory_message: string;
+  reason_summary: string;
+}
+
+/**
+ * Combine weather infection pressure (Layer 1) with satellite anomaly
+ * response (Layer 2) into a calibrated final risk score.
+ *
+ * Logic:
+ *   - If weather pressure is HIGH + satellite confirms  → risk = high, confidence = high
+ *   - If weather pressure is HIGH + no satellite data   → risk = medium-high, confidence = medium
+ *   - If weather pressure is LOW  + satellite anomaly   → risk = medium (investigate abiotic)
+ *   - If abiotic probability is HIGH                    → suppress biotic risk, flag as abiotic
+ *
+ * The combination uses a geometric mean to require BOTH signals to be present
+ * for high confidence, rather than a simple weighted average that allows one
+ * strong signal to dominate.
+ *
+ * @param disease   — disease identifier
+ * @param weatherPressure  — [0,1] score from weather-pressure.ts Layer 1
+ * @param satelliteResponse — [0,1] score from satelliteAnomalyResponse() Layer 2
+ * @param abioticProbability — [0,1] from satelliteAnomalyResponse().abiotic_stress
+ * @param dataQuality — satellite data availability
+ */
+export function calibratedRisk(
+  disease: DiseaseName,
+  weatherPressure: number,
+  satelliteResponse: number,
+  abioticProbability: number = 0,
+  dataQuality: 'good' | 'partial' | 'sar_only' | 'no_data' = 'no_data',
+): CalibratedRiskOutput {
+  // Abiotic suppressor: if cell looks like drought/heat stress, dampen biotic scores
+  // (except charcoal_rot which IS a dry-stress disease)
+  const abioticSuppressor = disease === 'charcoal_rot'
+    ? 1.0
+    : 1.0 - abioticProbability * 0.6;   // max 60% suppression
+
+  // Combined score: geometric mean ensures both need to be present
+  // When satellite data is missing we fall back to weather alone (with a penalty)
+  let finalRisk: number;
+  let primaryDriver: PrimaryDriver;
+
+  if (dataQuality === 'no_data') {
+    // No satellite — weather-only, capped at 0.65 (can't be "high" without confirmation)
+    finalRisk = Math.min(weatherPressure * 0.85, 0.65);
+    primaryDriver = 'weather';
+  } else if (dataQuality === 'sar_only') {
+    // SAR-only — weather + partial confirmation
+    finalRisk = (weatherPressure * 0.65 + satelliteResponse * 0.35) * abioticSuppressor;
+    primaryDriver = weatherPressure > satelliteResponse ? 'weather' : 'satellite';
+  } else {
+    // Full optical + (optionally) SAR available
+    if (weatherPressure >= 0.5 && satelliteResponse >= 0.4) {
+      // Both signals strong — geometric mean with small bonus
+      finalRisk = Math.sqrt(weatherPressure * satelliteResponse) * 1.1 * abioticSuppressor;
+      primaryDriver = 'both';
+    } else if (weatherPressure >= 0.5) {
+      // Weather strong, satellite weak or noisy
+      finalRisk = (weatherPressure * 0.70 + satelliteResponse * 0.30) * abioticSuppressor;
+      primaryDriver = 'weather';
+    } else if (satelliteResponse >= 0.4) {
+      // Satellite anomaly without strong weather window — likely early / lagging signal
+      finalRisk = (weatherPressure * 0.35 + satelliteResponse * 0.65) * abioticSuppressor;
+      primaryDriver = 'satellite';
+    } else {
+      finalRisk = (weatherPressure * 0.55 + satelliteResponse * 0.45) * abioticSuppressor;
+      primaryDriver = abioticProbability > 0.5 ? 'abiotic' : 'weather';
+    }
+  }
+
+  finalRisk = clamp01(finalRisk);
+
+  // Confidence: function of data quality + signal agreement
+  let conf: ConfidenceLevel;
+  if (dataQuality === 'no_data') {
+    conf = weatherPressure >= 0.6 ? 'medium' : 'low';
+  } else if (primaryDriver === 'both' && finalRisk >= 0.55) {
+    conf = finalRisk >= 0.70 ? 'high' : 'medium-high';
+  } else if (primaryDriver === 'weather' || primaryDriver === 'satellite') {
+    conf = finalRisk >= 0.55 ? 'medium' : 'low';
+  } else if (primaryDriver === 'abiotic') {
+    conf = 'low';
+  } else {
+    conf = 'low';
+  }
+
+  return {
+    disease,
+    weather_pressure: Number(weatherPressure.toFixed(3)),
+    satellite_response: Number(satelliteResponse.toFixed(3)),
+    abiotic_probability: Number(abioticProbability.toFixed(3)),
+    final_risk: Number(finalRisk.toFixed(3)),
+    confidence: conf,
+    primary_driver: primaryDriver,
+    scout_priority: severity(finalRisk),
+  };
+}
+
+/**
+ * Generate the final human-readable advisory message.
+ * This is the output the farmer (or KVK agent) sees:
+ *
+ *   "High infection pressure detected from weather (14h leaf wetness + blast temp window).
+ *    Satellite canopy response is consistent with early stress (CIre decline, NDMI anomaly).
+ *    Scout this zone within 24-48h. Confidence: medium-high.
+ *    Spray window: tomorrow morning before 9am if confirmed."
+ */
+export function buildAdvisoryMessage(
+  topDisease: DiseaseName | null,
+  output: CalibratedRiskOutput,
+  weatherReason: string,
+  satelliteSignals: string[],
+  forecast3d: number,
+  forecast7d: number,
+): { message: string; reason_summary: string } {
+  const diseaseLabel: Record<DiseaseName, string> = {
+    rice_blast: 'Rice Blast',
+    sheath_blight: 'Sheath Blight',
+    bacterial_leaf_blight: 'Bacterial Leaf Blight',
+    downy_mildew: 'Downy Mildew',
+    leaf_spot: 'Leaf Spot',
+    charcoal_rot: 'Charcoal Rot',
+  };
+
+  const label = topDisease ? diseaseLabel[topDisease] : 'Disease pressure';
+  const risk = output.final_risk;
+
+  let urgency: string;
+  if (risk >= 0.70) urgency = 'Scout this zone IMMEDIATELY — risk is high.';
+  else if (risk >= 0.50) urgency = 'Scout this zone within 24–48 hours.';
+  else if (risk >= 0.35) urgency = 'Monitor this zone — conditions are developing.';
+  else urgency = 'Low current risk — continue routine scouting.';
+
+  const satPart = satelliteSignals.length > 0
+    ? `Satellite canopy confirms: ${satelliteSignals.slice(0, 2).join(', ')}.`
+    : 'Satellite confirmation limited — weather signal only.';
+
+  const forecastPart = forecast3d >= 0.65
+    ? `⚠ High infection pressure forecast in next 3 days.`
+    : forecast7d >= 0.65
+      ? `Elevated pressure expected in the next 7 days.`
+      : '';
+
+  const sprayWindow = risk >= 0.60 && output.primary_driver !== 'abiotic'
+    ? 'Prepare spray if field scouting confirms lesions. Apply early morning or late afternoon.'
+    : '';
+
+  const parts = [
+    `${label} risk: ${severity(risk).toUpperCase()} (score ${risk.toFixed(2)}, confidence ${output.confidence}).`,
+    `Weather pressure: ${weatherReason}.`,
+    satPart,
+    urgency,
+    forecastPart,
+    sprayWindow,
+  ].filter(Boolean);
+
+  const reasonSummary = [weatherReason, ...satelliteSignals.slice(0, 2)].join(' + ');
+
+  return {
+    message: parts.join(' '),
+    reason_summary: reasonSummary,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // ML model hook (scaffold — no trained model yet)
 // ---------------------------------------------------------------------------
 
