@@ -45,6 +45,8 @@ import {
   Scan,
   CalendarDays,
   X,
+  PenLine,
+  LayoutList,
 } from 'lucide-react';
 import { useWeather } from '@/hooks/useWeather';
 import { DiagnosticsWeatherCard } from '@/components/features/diagnostics/DiagnosticsWeatherCard';
@@ -272,11 +274,18 @@ const FieldDiagnostics: React.FC = () => {
               <MapPin className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
               <h2 className="text-lg font-semibold mb-2">No Farm Selected</h2>
               <p className="text-muted-foreground mb-4">
-                Please draw a farm polygon first to run diagnostics.
+                Tap corners on the map to outline your first plot, then run diagnostics.
               </p>
-              <Button onClick={() => navigate('/draw-polygon')}>
-                Draw Farm Polygon
-              </Button>
+              <div className="flex items-center justify-center gap-3">
+                <Button onClick={() => navigate('/plot-designer')}>
+                  <PenLine className="w-4 h-4 mr-2" />
+                  Draw polygon
+                </Button>
+                <Button variant="outline" onClick={() => navigate('/farms')}>
+                  <LayoutList className="w-4 h-4 mr-2" />
+                  My farms
+                </Button>
+              </div>
             </CardContent>
           </Card>
         </main>
@@ -295,10 +304,10 @@ const FieldDiagnostics: React.FC = () => {
             <Button
               variant="outline"
               size="sm"
-              onClick={() => navigate('/')}
+              onClick={() => navigate('/farms')}
             >
-              <ArrowLeft className="w-4 h-4 mr-2" />
-              Back
+              <LayoutList className="w-4 h-4 mr-2" />
+              My Farms
             </Button>
             <div>
               <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
@@ -348,7 +357,7 @@ const FieldDiagnostics: React.FC = () => {
             </div>
           )}
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             {result && (
               <Badge variant={result.problems.length > 0 ? 'destructive' : 'default'}>
                 {result.problems.length > 0
@@ -356,6 +365,15 @@ const FieldDiagnostics: React.FC = () => {
                   : 'Healthy'}
               </Badge>
             )}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => navigate('/plot-designer')}
+              className="border-emerald-300 text-emerald-700 hover:bg-emerald-50"
+            >
+              <PenLine className="w-4 h-4 mr-2" />
+              Draw polygon
+            </Button>
             <Button
               variant="outline"
               size="sm"

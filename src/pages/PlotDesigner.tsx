@@ -1,18 +1,16 @@
 /**
- * PlotDesigner — mobile-app style
+ * PlotDesigner — tap-to-vertex polygon builder
  *
- * Full-bleed map with a glass top bar and a bottom action sheet. The user:
- *   1. Sees their current location on a satellite map.
- *   2. Taps the big Pencil FAB and draws around their plot.
- *   3. On release, the stroke is simplified with Ramer–Douglas–Peucker into a
- *      clean straight-edged editable polygon that follows their drawing.
- *   4. Drags vertices to refine, names the farm, and continues to diagnostics.
+ * Flow:
+ *   1. Places search + locate button navigate the satellite map.
+ *   2. User taps map corners; each tap drops a draggable marker.
+ *   3. At 3+ points "Close polygon" appears — tap it to lock in an editable polygon.
+ *   4. Drag any vertex handle to refine.
+ *   5. "Save farm" sheet offers cloud save or local-only save.
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { setOptions, importLibrary } from '@googlemaps/js-api-loader';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import {
   Dialog,
   DialogContent,
@@ -21,508 +19,522 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
 import {
-  Pencil,
-  Locate,
-  Trash2,
-  Save,
+  ArrowLeft,
+  Check,
+  Cloud,
+  HardDrive,
   Layers,
   Loader2,
-  ChevronRight,
-  X,
+  Locate,
+  Save,
+  Search,
+  Trash2,
+  Undo2,
 } from 'lucide-react';
 import { useToast } from '@/hooks/useToast';
-import { simplifyStrokeToPolygon, type LatLng } from '@/utils/polygonSimplify';
-import { saveFarm, polygonsToFarmInsert } from '@/services/farmService';
+import { polygonsToFarmInsert, saveFarm, saveTempFarm } from '@/services/farmService';
 
-const GOOGLE_MAPS_API_KEY = (import.meta.env.VITE_GOOGLE_MAPS_API_KEY as string | undefined)?.trim() || '';
-const DEFAULT_CENTER: LatLng = { lat: 12.39115, lng: 77.7736 };
+const GOOGLE_MAPS_API_KEY =
+  (import.meta.env.VITE_GOOGLE_MAPS_API_KEY as string | undefined)?.trim() ?? '';
+const DEFAULT_CENTER = { lat: 12.39115, lng: 77.7736 };
 const ACTIVE_FARM_KEY = 'activeFarmId';
 
-const SIMPLIFY_PRESETS = [
-  { label: 'Faithful', value: 0.006 },
-  { label: 'Balanced', value: 0.015 },
-  { label: 'Coarse', value: 0.035 },
-] as const;
+type LatLng = { lat: number; lng: number };
+type Phase = 'placing' | 'done';
 
-type Status = { tone: 'idle' | 'ok' | 'warn' | 'bad'; text: string };
+// ─── Helpers ───────────────────────────────────────────────────────────────────
+
+function computeAreaSqM(ring: LatLng[]): number {
+  const earth = 6378137;
+  const rad = Math.PI / 180;
+  const pts = ring.map(({ lat, lng }) => ({
+    x: earth * lng * rad,
+    y: earth * Math.log(Math.tan(Math.PI / 4 + (lat * rad) / 2)),
+  }));
+  let sum = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[i];
+    const b = pts[(i + 1) % pts.length];
+    sum += a.x * b.y - b.x * a.y;
+  }
+  return Math.abs(sum / 2);
+}
+
+function formatArea(sqM: number): string {
+  if (!sqM || !Number.isFinite(sqM) || sqM <= 0) return '—';
+  if (sqM >= 10000) return `${(sqM / 10000).toFixed(2)} ha`;
+  if (sqM >= 4046.856) return `${(sqM / 4046.856).toFixed(2)} ac`;
+  return `${Math.round(sqM)} m²`;
+}
+
+// ─── Component ─────────────────────────────────────────────────────────────────
 
 const PlotDesigner: React.FC = () => {
+
   const mapEl = useRef<HTMLDivElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const mapRef = useRef<google.maps.Map | null>(null);
+  const markersRef = useRef<google.maps.Marker[]>([]);
   const polylineRef = useRef<google.maps.Polyline | null>(null);
   const polygonRef = useRef<google.maps.Polygon | null>(null);
-  const drawShieldRef = useRef<HTMLDivElement>(null);
-  const lastPointerRef = useRef<{ x: number; y: number } | null>(null);
-  const roughPointsRef = useRef<LatLng[]>([]);
-  const isDrawingRef = useRef(false);
+  const clickListenerRef = useRef<google.maps.MapsEventListener | null>(null);
+  // Always-current mirror of React vertices state (avoids stale closures in map callbacks)
+  const verticesRef = useRef<LatLng[]>([]);
 
   const [mapLoaded, setMapLoaded] = useState(false);
-  const [drawMode, setDrawMode] = useState(false);
-  const [hasPolygon, setHasPolygon] = useState(false);
-  const [polyInfo, setPolyInfo] = useState<{ vertices: number; areaSqM: number } | null>(null);
-  const [mapType, setMapType] = useState<'satellite' | 'hybrid' | 'roadmap'>('satellite');
-  const [status, setStatus] = useState<Status>({ tone: 'idle', text: 'Loading map…' });
-  const [simplifyIdx, setSimplifyIdx] = useState<number>(2); // "Coarse" default
+  const [vertices, setVertices] = useState<LatLng[]>([]);
+  const [phase, setPhase] = useState<Phase>('placing');
+  const [polyInfo, setPolyInfo] = useState<{ vertexCount: number; areaSqM: number } | null>(null);
+  const [mapType, setMapType] = useState<'satellite' | 'hybrid'>('satellite');
   const [showSaveDialog, setShowSaveDialog] = useState(false);
   const [farmName, setFarmName] = useState('My Farm');
   const [saving, setSaving] = useState(false);
+  const [savingTo, setSavingTo] = useState<'cloud' | 'local' | null>(null);
 
   const navigate = useNavigate();
   const { toast } = useToast();
 
-  // ─── Map init ──────────────────────────────────────────────────────────────
+  // ─── Map init ────────────────────────────────────────────────────────────────
   useEffect(() => {
-    if (!mapEl.current) return;
-    if (!GOOGLE_MAPS_API_KEY) {
-      setStatus({ tone: 'bad', text: 'Add VITE_GOOGLE_MAPS_API_KEY to .env.' });
-      return;
-    }
-
+    if (!mapEl.current || !GOOGLE_MAPS_API_KEY) return;
     let cancelled = false;
+
     (async () => {
       try {
         setOptions({ key: GOOGLE_MAPS_API_KEY, v: 'weekly' });
-        const mapsLibrary = (await importLibrary('maps')) as google.maps.MapsLibrary;
+        await Promise.all([importLibrary('maps'), importLibrary('places')]);
         if (cancelled || !mapEl.current) return;
 
-        const map = new mapsLibrary.Map(mapEl.current, {
+        const map = new google.maps.Map(mapEl.current, {
           center: DEFAULT_CENTER,
           zoom: 17,
           mapTypeId: 'satellite',
           disableDefaultUI: true,
-          zoomControl: false,
-          fullscreenControl: false,
           gestureHandling: 'greedy',
           tilt: 0,
           clickableIcons: false,
         });
         mapRef.current = map;
         setMapLoaded(true);
-        setStatus({ tone: 'idle', text: 'Centering on your location…' });
         focusCurrentLocation(map);
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        setStatus({ tone: 'bad', text: `Map load failed: ${msg}` });
+        toast({
+          title: 'Map load failed',
+          description: err instanceof Error ? err.message : String(err),
+          variant: 'destructive',
+        });
       }
     })();
 
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, []);
 
-  // ─── Geolocation ───────────────────────────────────────────────────────────
-  const focusCurrentLocation = useCallback((maybeMap?: google.maps.Map) => {
-    const map = maybeMap ?? mapRef.current;
-    if (!map) return;
-    if (!navigator.geolocation) {
-      setStatus({ tone: 'warn', text: 'Geolocation unavailable. Pan to your plot.' });
+  // ─── Places autocomplete ─────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!mapLoaded || !searchInputRef.current || !mapRef.current) return;
+
+    const autocomplete = new google.maps.places.Autocomplete(searchInputRef.current, {
+      fields: ['geometry', 'name'],
+    });
+
+    const listener = autocomplete.addListener('place_changed', () => {
+      const place = autocomplete.getPlace();
+      if (!place.geometry?.location) return;
+      const map = mapRef.current!;
+      if (place.geometry.viewport) {
+        map.fitBounds(place.geometry.viewport);
+      } else {
+        map.setCenter(place.geometry.location);
+        map.setZoom(18);
+      }
+    });
+
+    return () => {
+      google.maps.event.removeListener(listener);
+      google.maps.event.clearInstanceListeners(autocomplete);
+    };
+  }, [mapLoaded]);
+
+  // ─── Map click → add vertex (only while placing) ─────────────────────────────
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || phase !== 'placing') {
+      if (clickListenerRef.current) {
+        google.maps.event.removeListener(clickListenerRef.current);
+        clickListenerRef.current = null;
+      }
       return;
     }
-    setStatus({ tone: 'idle', text: 'Reading location…' });
+
+    clickListenerRef.current = map.addListener('click', (e: google.maps.MapMouseEvent) => {
+      if (e.latLng) addVertex({ lat: e.latLng.lat(), lng: e.latLng.lng() });
+    });
+
+    return () => {
+      if (clickListenerRef.current) {
+        google.maps.event.removeListener(clickListenerRef.current);
+        clickListenerRef.current = null;
+      }
+    };
+  }, [phase, mapLoaded]);
+
+  // ─── Geolocation ─────────────────────────────────────────────────────────────
+  const focusCurrentLocation = useCallback((maybeMap?: google.maps.Map) => {
+    const map = maybeMap ?? mapRef.current;
+    if (!map || !navigator.geolocation) return;
     navigator.geolocation.getCurrentPosition(
       ({ coords }) => {
         map.panTo({ lat: coords.latitude, lng: coords.longitude });
-        map.setZoom(Math.max(map.getZoom() || 17, 18));
-        setStatus({ tone: 'ok', text: 'Tap Pencil and trace your plot.' });
+        map.setZoom(Math.max(map.getZoom() ?? 17, 18));
       },
-      () => {
-        setStatus({ tone: 'warn', text: 'Location denied. Pan to your plot.' });
-      },
-      { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 },
+      () => {},
+      { enableHighAccuracy: true, timeout: 10000 },
     );
   }, []);
 
-  // ─── Simplify stroke into editable polygon ─────────────────────────────────
-  const renderPolygonFromStroke = useCallback((stroke: LatLng[], tolerancePct: number) => {
+  // ─── Polyline helper ──────────────────────────────────────────────────────────
+  const refreshPolyline = useCallback((pts: LatLng[]) => {
     const map = mapRef.current;
-    if (!map || stroke.length < 3) return;
-
-    const result = simplifyStrokeToPolygon(stroke, { tolerancePct });
-    if (result.ring.length < 4) {
-      setStatus({ tone: 'bad', text: 'Sketch too small. Try a bigger loop.' });
+    if (!map || pts.length < 2) {
+      polylineRef.current?.setMap(null);
+      polylineRef.current = null;
       return;
     }
+    // Close the preview ring when 3+ points
+    const path = pts.length >= 3 ? [...pts, pts[0]] : pts;
+    if (polylineRef.current) {
+      polylineRef.current.setPath(path);
+    } else {
+      polylineRef.current = new google.maps.Polyline({
+        map,
+        path,
+        strokeColor: '#10b981',
+        strokeOpacity: 0.85,
+        strokeWeight: 2.5,
+        clickable: false,
+        zIndex: 8,
+      });
+    }
+  }, []);
 
-    const path: google.maps.LatLngLiteral[] = result.ring
-      .slice(0, -1)
-      .map((p) => ({ lat: p.lat, lng: p.lng }));
+  // ─── Add vertex ───────────────────────────────────────────────────────────────
+  const addVertex = useCallback((pt: LatLng) => {
+    const map = mapRef.current;
+    if (!map) return;
 
+    const marker = new google.maps.Marker({
+      position: pt,
+      map,
+      icon: {
+        path: google.maps.SymbolPath.CIRCLE,
+        scale: 7,
+        fillColor: '#10b981',
+        fillOpacity: 1,
+        strokeColor: '#ffffff',
+        strokeWeight: 2,
+      },
+      draggable: true,
+      zIndex: 10,
+    });
+
+    markersRef.current.push(marker);
+    verticesRef.current = [...verticesRef.current, pt];
+    setVertices([...verticesRef.current]);
+    refreshPolyline(verticesRef.current);
+
+    marker.addListener('drag', () => {
+      const idx = markersRef.current.indexOf(marker);
+      if (idx === -1) return;
+      const pos = marker.getPosition();
+      if (!pos) return;
+      verticesRef.current[idx] = { lat: pos.lat(), lng: pos.lng() };
+      refreshPolyline(verticesRef.current);
+      setVertices([...verticesRef.current]);
+    });
+  }, [refreshPolyline]);
+
+  // ─── Undo ─────────────────────────────────────────────────────────────────────
+  const handleUndo = useCallback(() => {
+    if (verticesRef.current.length === 0) return;
+    const last = markersRef.current.pop();
+    last?.setMap(null);
+    verticesRef.current = verticesRef.current.slice(0, -1);
+    setVertices([...verticesRef.current]);
+    refreshPolyline(verticesRef.current);
+  }, [refreshPolyline]);
+
+  // ─── Close polygon ────────────────────────────────────────────────────────────
+  const handleClosePolygon = useCallback(() => {
+    const pts = verticesRef.current;
+    if (pts.length < 3) return;
+    const map = mapRef.current;
+    if (!map) return;
+
+    // Tear down markers + preview line
+    markersRef.current.forEach(m => m.setMap(null));
+    markersRef.current = [];
     polylineRef.current?.setMap(null);
     polylineRef.current = null;
-    polygonRef.current?.setMap(null);
 
     const polygon = new google.maps.Polygon({
       map,
-      paths: path,
+      paths: pts,
       editable: true,
-      draggable: true,
+      draggable: false,
       strokeColor: '#10b981',
       strokeOpacity: 1,
       strokeWeight: 3,
       fillColor: '#10b981',
-      fillOpacity: 0.22,
+      fillOpacity: 0.2,
       zIndex: 9,
     });
     polygonRef.current = polygon;
 
-    const updateInfo = () => {
-      const p = polygon.getPath();
+    const recompute = () => {
       const ring: LatLng[] = [];
-      p.forEach((latLng) => ring.push({ lat: latLng.lat(), lng: latLng.lng() }));
+      polygon.getPath().forEach(ll => ring.push({ lat: ll.lat(), lng: ll.lng() }));
       if (ring.length >= 3) {
-        setPolyInfo({ vertices: ring.length, areaSqM: computeAreaSqM(ring) });
+        setPolyInfo({ vertexCount: ring.length, areaSqM: computeAreaSqM(ring) });
       }
     };
-    const path1 = polygon.getPath();
-    ['set_at', 'insert_at', 'remove_at'].forEach((evt) => path1.addListener(evt, updateInfo));
-
-    setPolyInfo({ vertices: result.vertexCount, areaSqM: result.areaSqM });
-    setHasPolygon(true);
-    setStatus({ tone: 'ok', text: 'Drag any handle to refine. Tap Save when ready.' });
+    ['set_at', 'insert_at', 'remove_at'].forEach(evt =>
+      polygon.getPath().addListener(evt, recompute),
+    );
+    recompute();
+    setPhase('done');
   }, []);
 
-  // ─── Pencil drawing on the overlay shield ──────────────────────────────────
-  useEffect(() => {
-    const shield = drawShieldRef.current;
-    if (!shield) return;
-
-    const clientToLatLng = (clientX: number, clientY: number): LatLng | null => {
-      const map = mapRef.current;
-      const el = mapEl.current;
-      if (!map || !el) return null;
-      const projection = map.getProjection();
-      if (!projection) return null;
-      const bounds = el.getBoundingClientRect();
-      const x = clientX - bounds.left;
-      const y = clientY - bounds.top;
-      const centerPt = projection.fromLatLngToPoint(map.getCenter() as google.maps.LatLng);
-      if (!centerPt) return null;
-      const scale = 2 ** (map.getZoom() ?? 17);
-      const worldPt = new google.maps.Point(
-        centerPt.x + (x - bounds.width / 2) / scale,
-        centerPt.y + (y - bounds.height / 2) / scale,
-      );
-      const latLng = projection.fromPointToLatLng(worldPt);
-      return latLng ? { lat: latLng.lat(), lng: latLng.lng() } : null;
-    };
-
-    const addPoint = (event: PointerEvent, force = false) => {
-      const rect = mapEl.current?.getBoundingClientRect();
-      if (!rect) return;
-      const pointer = { x: event.clientX - rect.left, y: event.clientY - rect.top };
-      if (!force && lastPointerRef.current) {
-        const dist = Math.hypot(
-          pointer.x - lastPointerRef.current.x,
-          pointer.y - lastPointerRef.current.y,
-        );
-        if (dist < 4) return;
-      }
-      lastPointerRef.current = pointer;
-      const latLng = clientToLatLng(event.clientX, event.clientY);
-      if (!latLng) return;
-      roughPointsRef.current.push(latLng);
-      if (polylineRef.current) {
-        const pts = roughPointsRef.current;
-        polylineRef.current.setPath(pts.length > 2 ? [...pts, pts[0]] : pts);
-      }
-    };
-
-    const onDown = (event: PointerEvent) => {
-      if (!drawMode) return;
-      event.preventDefault();
-      shield.setPointerCapture(event.pointerId);
-      isDrawingRef.current = true;
-      roughPointsRef.current = [];
-      lastPointerRef.current = null;
-      polylineRef.current?.setMap(null);
-      polylineRef.current = new google.maps.Polyline({
-        map: mapRef.current!,
-        path: [],
-        strokeColor: '#ef4444',
-        strokeOpacity: 0.95,
-        strokeWeight: 4,
-        clickable: false,
-        zIndex: 8,
-      });
-      polygonRef.current?.setMap(null);
-      polygonRef.current = null;
-      setHasPolygon(false);
-      setPolyInfo(null);
-      addPoint(event, true);
-      setStatus({ tone: 'idle', text: 'Drawing…' });
-    };
-
-    const onMove = (event: PointerEvent) => {
-      if (!isDrawingRef.current) return;
-      event.preventDefault();
-      addPoint(event);
-    };
-
-    const onUp = (event: PointerEvent) => {
-      if (!isDrawingRef.current) return;
-      event.preventDefault();
-      isDrawingRef.current = false;
-      try {
-        shield.releasePointerCapture(event.pointerId);
-      } catch {
-        // some browsers release automatically
-      }
-      const stroke = roughPointsRef.current;
-      if (stroke.length < 3) {
-        polylineRef.current?.setMap(null);
-        polylineRef.current = null;
-        setStatus({ tone: 'bad', text: 'Sketch too small. Try a bigger loop.' });
-        return;
-      }
-      renderPolygonFromStroke(stroke, SIMPLIFY_PRESETS[simplifyIdx].value);
-      setDrawMode(false);
-    };
-
-    shield.addEventListener('pointerdown', onDown);
-    shield.addEventListener('pointermove', onMove);
-    shield.addEventListener('pointerup', onUp);
-    shield.addEventListener('pointercancel', onUp);
-
-    return () => {
-      shield.removeEventListener('pointerdown', onDown);
-      shield.removeEventListener('pointermove', onMove);
-      shield.removeEventListener('pointerup', onUp);
-      shield.removeEventListener('pointercancel', onUp);
-    };
-  }, [drawMode, simplifyIdx, renderPolygonFromStroke]);
-
-  const handleResimplify = useCallback(
-    (nextIdx: number) => {
-      setSimplifyIdx(nextIdx);
-      const stroke = roughPointsRef.current;
-      if (stroke.length >= 3) {
-        renderPolygonFromStroke(stroke, SIMPLIFY_PRESETS[nextIdx].value);
-      }
-    },
-    [renderPolygonFromStroke],
-  );
-
+  // ─── Clear all ────────────────────────────────────────────────────────────────
   const handleClear = useCallback(() => {
+    markersRef.current.forEach(m => m.setMap(null));
+    markersRef.current = [];
     polylineRef.current?.setMap(null);
     polylineRef.current = null;
     polygonRef.current?.setMap(null);
     polygonRef.current = null;
-    roughPointsRef.current = [];
-    setHasPolygon(false);
+    verticesRef.current = [];
+    setVertices([]);
     setPolyInfo(null);
-    setStatus({ tone: 'idle', text: 'Tap Pencil and trace your plot.' });
+    setPhase('placing');
   }, []);
 
   const handleToggleMapType = useCallback(() => {
     const map = mapRef.current;
     if (!map) return;
-    const next: 'satellite' | 'hybrid' | 'roadmap' =
-      mapType === 'satellite' ? 'hybrid' : mapType === 'hybrid' ? 'roadmap' : 'satellite';
+    const next = mapType === 'satellite' ? 'hybrid' : 'satellite';
     map.setMapTypeId(next);
     setMapType(next);
   }, [mapType]);
 
-  const handleSave = useCallback(async () => {
-    const polygon = polygonRef.current;
-    if (!polygon) {
-      toast({ title: 'No plot drawn', description: 'Trace your plot first.', variant: 'destructive' });
-      return;
-    }
-    if (!farmName.trim()) {
-      toast({ title: 'Name required', description: 'Give your farm a name.', variant: 'destructive' });
-      return;
-    }
+  // ─── Save ─────────────────────────────────────────────────────────────────────
+  const getRing = useCallback((): number[][] => {
+    const poly = polygonRef.current;
+    if (!poly) return [];
+    const ring: number[][] = [];
+    poly.getPath().forEach(ll => ring.push([ll.lng(), ll.lat()]));
+    if (ring.length > 0) ring.push([ring[0][0], ring[0][1]]);
+    return ring;
+  }, []);
 
-    setSaving(true);
-    try {
-      const path = polygon.getPath();
-      const ring: number[][] = [];
-      path.forEach((latLng) => ring.push([latLng.lng(), latLng.lat()]));
-      if (ring.length > 0) ring.push([ring[0][0], ring[0][1]]);
+  const handleSave = useCallback(
+    async (to: 'cloud' | 'local') => {
+      if (!farmName.trim()) {
+        toast({ title: 'Name required', variant: 'destructive' });
+        return;
+      }
+      const ring = getRing();
+      if (ring.length < 4) {
+        toast({ title: 'No polygon drawn', variant: 'destructive' });
+        return;
+      }
 
-      const farmInsert = polygonsToFarmInsert(
-        [{ type: 'Polygon', coordinates: [ring] }],
-        farmName.trim(),
-      );
-      const saved = await saveFarm(farmInsert);
-      if (!saved) throw new Error('Save returned null');
+      setSaving(true);
+      setSavingTo(to);
+      try {
+        const farmInsert = polygonsToFarmInsert(
+          [{ type: 'Polygon', coordinates: [ring] }],
+          farmName.trim(),
+        );
 
-      localStorage.setItem(ACTIVE_FARM_KEY, saved.id);
-      toast({ title: 'Saved', description: `"${saved.name}" is ready.` });
-      navigate('/field-diagnostics');
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      toast({ title: 'Save failed', description: msg, variant: 'destructive' });
-    } finally {
-      setSaving(false);
-      setShowSaveDialog(false);
-    }
-  }, [farmName, navigate, toast]);
+        let savedId: string;
+        if (to === 'cloud') {
+          const saved = await saveFarm(farmInsert);
+          if (!saved) throw new Error('Save returned null');
+          savedId = saved.id;
+          toast({ title: 'Saved to cloud', description: `"${saved.name}" is ready.` });
+        } else {
+          const saved = saveTempFarm(farmInsert);
+          savedId = saved.id;
+          toast({ title: 'Saved locally', description: `"${saved.name}" saved on this device.` });
+        }
 
-  const statusBadgeClass = {
-    idle: 'bg-white/90 text-slate-900',
-    ok: 'bg-emerald-500/95 text-white',
-    warn: 'bg-amber-500/95 text-white',
-    bad: 'bg-rose-500/95 text-white',
-  }[status.tone];
+        localStorage.setItem(ACTIVE_FARM_KEY, savedId);
+        navigate('/');
+      } catch (err) {
+        toast({
+          title: 'Save failed',
+          description: err instanceof Error ? err.message : String(err),
+          variant: 'destructive',
+        });
+      } finally {
+        setSaving(false);
+        setSavingTo(null);
+        setShowSaveDialog(false);
+      }
+    },
+    [farmName, getRing, navigate, toast],
+  );
+
+  // ─── Instruction text ─────────────────────────────────────────────────────────
+  const hint =
+    vertices.length === 0
+      ? 'Tap map corners to outline your plot'
+      : vertices.length < 3
+      ? `${vertices.length} point${vertices.length > 1 ? 's' : ''} — add ${3 - vertices.length} more to close`
+      : `${vertices.length} corners — tap "Close" or keep adding`;
 
   return (
     <div
       className="fixed inset-0 overflow-hidden bg-black select-none"
-      style={{
-        // Honor iOS safe areas (notch / home indicator)
-        paddingTop: 'env(safe-area-inset-top)',
-        paddingBottom: 'env(safe-area-inset-bottom)',
-      }}
+      style={{ paddingTop: 'env(safe-area-inset-top)', paddingBottom: 'env(safe-area-inset-bottom)' }}
     >
-      {/* ─── Full-bleed map ─── */}
+      {/* Full-bleed map */}
       <div ref={mapEl} className="absolute inset-0" />
 
-      {/* Pencil capture shield */}
-      <div
-        ref={drawShieldRef}
-        className="absolute inset-0"
-        style={{
-          touchAction: 'none',
-          cursor: drawMode ? 'crosshair' : 'default',
-          pointerEvents: drawMode ? 'auto' : 'none',
-          background: drawMode ? 'rgba(0,0,0,0.001)' : 'transparent',
-          zIndex: 5,
-        }}
-      />
-
-      {/* ─── Top app bar (glass) ─── */}
+      {/* ─── Top bar ─── */}
       <header
-        className="absolute top-0 left-0 right-0 z-20 px-4 pt-3 pb-2 flex items-center gap-2"
+        className="absolute top-0 left-0 right-0 z-20 flex items-center gap-2 px-3 pt-3 pb-2"
         style={{ paddingTop: 'calc(env(safe-area-inset-top) + 12px)' }}
       >
-        <div className="flex-1 min-w-0 px-3 py-2 rounded-2xl bg-black/55 backdrop-blur-md border border-white/10 text-white">
-          <div className="text-[10px] uppercase tracking-wider text-white/60 leading-none">Step 1 of 2</div>
-          <div className="text-sm font-semibold leading-tight truncate">Design your plot</div>
+        {/* Back */}
+        <button
+          onClick={() => navigate('/')}
+          className="shrink-0 w-10 h-10 grid place-items-center rounded-full bg-black/60 backdrop-blur border border-white/15 text-white active:scale-95 transition"
+        >
+          <ArrowLeft className="w-5 h-5" />
+        </button>
+
+        {/* Places search */}
+        <div className="relative flex-1">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-white/45 pointer-events-none" />
+          <input
+            ref={searchInputRef}
+            type="text"
+            placeholder="Search location…"
+            disabled={!mapLoaded}
+            className="w-full h-10 pl-9 pr-3 rounded-full bg-black/60 backdrop-blur border border-white/15 text-white text-sm placeholder:text-white/40 outline-none focus:border-emerald-500/60 disabled:opacity-50"
+          />
         </div>
 
-        {/* Icon button row */}
+        {/* Locate */}
         <button
           onClick={() => focusCurrentLocation()}
           disabled={!mapLoaded}
+          className="shrink-0 w-10 h-10 grid place-items-center rounded-full bg-black/60 backdrop-blur border border-white/15 text-white active:scale-95 transition disabled:opacity-50"
           aria-label="My location"
-          className="w-11 h-11 grid place-items-center rounded-full bg-black/55 backdrop-blur-md border border-white/10 text-white active:scale-95 transition disabled:opacity-50"
         >
           <Locate className="w-5 h-5" />
         </button>
+
+        {/* Map type toggle */}
         <button
           onClick={handleToggleMapType}
           disabled={!mapLoaded}
+          className="shrink-0 w-10 h-10 grid place-items-center rounded-full bg-black/60 backdrop-blur border border-white/15 text-white active:scale-95 transition disabled:opacity-50"
           aria-label="Toggle map type"
-          className="w-11 h-11 grid place-items-center rounded-full bg-black/55 backdrop-blur-md border border-white/10 text-white active:scale-95 transition disabled:opacity-50"
         >
           <Layers className="w-5 h-5" />
         </button>
       </header>
 
-      {/* ─── Floating status pill ─── */}
-      {!hasPolygon && (
+      {/* ─── Hint pill ─── */}
+      {phase === 'placing' && mapLoaded && (
         <div
-          className="absolute left-1/2 -translate-x-1/2 z-20 px-4"
-          style={{ top: 'calc(env(safe-area-inset-top) + 72px)' }}
+          className="absolute left-1/2 -translate-x-1/2 z-20"
+          style={{ top: 'calc(env(safe-area-inset-top) + 68px)' }}
         >
-          <div
-            className={`px-3.5 py-2 rounded-full text-xs font-medium shadow-lg backdrop-blur-md max-w-[88vw] text-center whitespace-nowrap overflow-hidden text-ellipsis ${statusBadgeClass}`}
-          >
-            {status.text}
+          <div className="px-4 py-2 rounded-full bg-black/70 backdrop-blur text-white text-xs font-medium shadow-lg whitespace-nowrap">
+            {hint}
           </div>
         </div>
       )}
 
-      {/* ─── Map type indicator (small, top-left under bar) — optional ─── */}
-
       {/* ─── Loading overlay ─── */}
       {!mapLoaded && (
-        <div className="absolute inset-0 z-30 grid place-items-center bg-black/40 backdrop-blur-sm">
+        <div className="absolute inset-0 z-30 grid place-items-center bg-black/50 backdrop-blur-sm">
           <div className="text-center space-y-3">
             <Loader2 className="w-10 h-10 mx-auto animate-spin text-white" />
-            <p className="text-sm text-white/90">Loading map…</p>
+            <p className="text-sm text-white/80">Loading map…</p>
           </div>
         </div>
       )}
 
       {/* ─── Bottom action sheet ─── */}
       <div
-        className="absolute left-0 right-0 bottom-0 z-20 px-4 pt-3 pb-4 pointer-events-none"
+        className="absolute left-0 right-0 bottom-0 z-20 px-4 pt-2 pointer-events-none"
         style={{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 16px)' }}
       >
-        {hasPolygon ? (
-          // Polygon ready — show info card + Save CTA
-          <div className="pointer-events-auto mx-auto max-w-md rounded-3xl bg-white/95 backdrop-blur-md border border-white/30 shadow-2xl overflow-hidden">
-            <div className="px-5 pt-4 pb-3">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <div className="text-[11px] uppercase tracking-wider text-slate-500 leading-none">Your plot</div>
-                  <div className="text-2xl font-bold text-slate-900 leading-tight mt-0.5">
-                    {formatArea(polyInfo?.areaSqM ?? 0)}
-                  </div>
-                  <div className="text-xs text-slate-500 mt-0.5">
-                    {polyInfo?.vertices ?? 0} corner{polyInfo?.vertices === 1 ? '' : 's'} · drag handles to refine
-                  </div>
+        {phase === 'done' ? (
+          // Polygon ready
+          <div className="pointer-events-auto mx-auto max-w-md rounded-3xl bg-white/96 backdrop-blur-md border border-white/20 shadow-2xl overflow-hidden">
+            <div className="px-5 pt-4 pb-4 flex items-center justify-between gap-3">
+              <div>
+                <div className="text-[11px] uppercase tracking-wider text-slate-500 font-medium">
+                  Your plot
                 </div>
-                <button
-                  onClick={handleClear}
-                  aria-label="Clear polygon"
-                  className="w-11 h-11 grid place-items-center rounded-full bg-slate-100 text-slate-600 active:scale-95 transition"
-                >
-                  <Trash2 className="w-5 h-5" />
-                </button>
+                <div className="text-3xl font-bold text-slate-900 leading-tight mt-0.5">
+                  {formatArea(polyInfo?.areaSqM ?? 0)}
+                </div>
+                <div className="text-xs text-slate-500 mt-0.5">
+                  {polyInfo?.vertexCount ?? 0} corners · drag handles to refine
+                </div>
               </div>
-
-              {/* Detail level chips */}
-              {roughPointsRef.current.length >= 3 && (
-                <div className="mt-3">
-                  <div className="text-[11px] uppercase tracking-wider text-slate-500 mb-1.5">Detail</div>
-                  <div className="flex gap-1.5">
-                    {SIMPLIFY_PRESETS.map((preset, idx) => (
-                      <button
-                        key={preset.label}
-                        onClick={() => handleResimplify(idx)}
-                        className={`flex-1 py-2 rounded-xl text-xs font-medium transition ${
-                          simplifyIdx === idx
-                            ? 'bg-slate-900 text-white'
-                            : 'bg-slate-100 text-slate-700 active:bg-slate-200'
-                        }`}
-                      >
-                        {preset.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
+              <button
+                onClick={handleClear}
+                className="w-11 h-11 grid place-items-center rounded-full bg-slate-100 text-slate-500 hover:text-red-500 hover:bg-red-50 active:scale-95 transition"
+                aria-label="Clear polygon"
+              >
+                <Trash2 className="w-5 h-5" />
+              </button>
             </div>
-
             <button
               onClick={() => setShowSaveDialog(true)}
-              className="w-full py-4 bg-emerald-500 text-white font-semibold flex items-center justify-center gap-2 active:bg-emerald-600 transition"
+              className="w-full py-4 bg-emerald-500 hover:bg-emerald-600 text-white font-semibold flex items-center justify-center gap-2 active:scale-[0.99] transition"
             >
-              Save & analyze
-              <ChevronRight className="w-5 h-5" />
+              <Save className="w-4 h-4" />
+              Save farm
             </button>
           </div>
         ) : (
-          // Default — single big Pencil FAB
-          <div className="pointer-events-auto flex justify-center">
-            <button
-              onClick={() => setDrawMode((v) => !v)}
-              disabled={!mapLoaded}
-              className={`flex items-center gap-3 px-6 py-4 rounded-full font-semibold shadow-2xl active:scale-95 transition disabled:opacity-50 ${
-                drawMode
-                  ? 'bg-rose-500 text-white'
-                  : 'bg-emerald-500 text-white'
-              }`}
-              style={{ minWidth: 200 }}
-            >
-              {drawMode ? <X className="w-6 h-6" /> : <Pencil className="w-6 h-6" />}
-              <span className="text-base">{drawMode ? 'Cancel drawing' : 'Draw plot'}</span>
-            </button>
+          // Placing vertices
+          <div className="pointer-events-auto mx-auto max-w-md flex gap-2">
+            {vertices.length === 0 ? (
+              <div className="flex-1 py-3.5 rounded-2xl bg-black/60 backdrop-blur border border-white/10 text-white/50 text-sm text-center">
+                Tap on the map to place corners
+              </div>
+            ) : (
+              <>
+                <button
+                  onClick={handleUndo}
+                  className="flex-1 py-3.5 rounded-2xl bg-black/70 backdrop-blur border border-white/15 text-white font-medium text-sm flex items-center justify-center gap-2 active:scale-95 transition"
+                >
+                  <Undo2 className="w-4 h-4" />
+                  Undo
+                </button>
+
+                {vertices.length >= 3 && (
+                  <button
+                    onClick={handleClosePolygon}
+                    className="flex-1 py-3.5 rounded-2xl bg-emerald-500 hover:bg-emerald-600 text-white font-semibold text-sm flex items-center justify-center gap-2 active:scale-95 transition"
+                  >
+                    <Check className="w-4 h-4" />
+                    Close polygon
+                  </button>
+                )}
+              </>
+            )}
           </div>
         )}
       </div>
@@ -531,67 +543,66 @@ const PlotDesigner: React.FC = () => {
       <Dialog open={showSaveDialog} onOpenChange={setShowSaveDialog}>
         <DialogContent className="rounded-3xl max-w-sm">
           <DialogHeader>
-            <DialogTitle>Name your farm</DialogTitle>
+            <DialogTitle>Save your farm</DialogTitle>
             <DialogDescription>
-              We'll save it and open Field Diagnostics with your boundary.
+              Give it a name, then choose where to save it.
             </DialogDescription>
           </DialogHeader>
-          <div className="py-2">
+
+          <div className="py-1">
             <Input
               autoFocus
               placeholder="e.g., North field, Mango block A"
               value={farmName}
-              onChange={(e) => setFarmName(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && farmName.trim() && !saving) handleSave();
+              onChange={e => setFarmName(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter' && farmName.trim() && !saving) handleSave('cloud');
               }}
               className="h-12 text-base"
             />
           </div>
-          <DialogFooter className="gap-2 sm:gap-2">
-            <Button
-              variant="outline"
+
+          <DialogFooter className="flex-col gap-2 sm:flex-col">
+            {/* Cloud save */}
+            <button
+              onClick={() => handleSave('cloud')}
+              disabled={!farmName.trim() || saving}
+              className="w-full h-12 rounded-2xl bg-emerald-500 hover:bg-emerald-600 disabled:opacity-50 text-white font-semibold flex items-center justify-center gap-2 transition"
+            >
+              {saving && savingTo === 'cloud' ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Cloud className="w-4 h-4" />
+              )}
+              Save to cloud
+            </button>
+
+            {/* Local save */}
+            <button
+              onClick={() => handleSave('local')}
+              disabled={!farmName.trim() || saving}
+              className="w-full h-12 rounded-2xl border border-slate-200 hover:bg-slate-50 disabled:opacity-50 text-slate-700 font-medium flex items-center justify-center gap-2 transition"
+            >
+              {saving && savingTo === 'local' ? (
+                <Loader2 className="w-4 h-4 animate-spin text-slate-500" />
+              ) : (
+                <HardDrive className="w-4 h-4 text-slate-500" />
+              )}
+              Save locally only
+            </button>
+
+            <button
               onClick={() => setShowSaveDialog(false)}
               disabled={saving}
-              className="h-12 rounded-2xl flex-1"
+              className="w-full h-10 rounded-2xl text-slate-400 hover:text-slate-600 text-sm transition"
             >
               Cancel
-            </Button>
-            <Button
-              onClick={handleSave}
-              disabled={!farmName.trim() || saving}
-              className="h-12 rounded-2xl flex-1 bg-emerald-500 hover:bg-emerald-600"
-            >
-              {saving ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Save className="w-4 h-4 mr-2" />}
-              Save
-            </Button>
+            </button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>
   );
 };
-
-function computeAreaSqM(ring: LatLng[]): number {
-  const earth = 6378137;
-  const meters = ring.map(({ lat, lng }) => ({
-    x: earth * ((lng * Math.PI) / 180),
-    y: earth * Math.log(Math.tan(Math.PI / 4 + (lat * Math.PI / 180) / 2)),
-  }));
-  let sum = 0;
-  for (let i = 0; i < meters.length; i += 1) {
-    const a = meters[i];
-    const b = meters[(i + 1) % meters.length];
-    sum += a.x * b.y - b.x * a.y;
-  }
-  return Math.abs(sum / 2);
-}
-
-function formatArea(sqMeters: number): string {
-  if (!Number.isFinite(sqMeters) || sqMeters <= 0) return '—';
-  if (sqMeters >= 10000) return `${(sqMeters / 10000).toFixed(2)} ha`;
-  if (sqMeters >= 4046.856) return `${(sqMeters / 4046.856).toFixed(2)} ac`;
-  return `${Math.round(sqMeters)} m²`;
-}
 
 export default PlotDesigner;

@@ -3,6 +3,7 @@ import { bbox, area, circle } from '@turf/turf';
 
 // Local storage key for farms
 const FARMS_STORAGE_KEY = 'sentinel_farms';
+const TEMP_FARMS_KEY = 'sentinel_temp_farms';
 const OFFLINE_TRACE_QUEUE_KEY = 'offline_trace_queue';
 
 interface OfflineQueueEntry {
@@ -285,19 +286,72 @@ export async function updateFarmField(
 }
 
 /**
- * Delete a farm
+ * Get temp-only (local) farms from localStorage
+ */
+export function getTempFarms(): Farm[] {
+  try {
+    const data = localStorage.getItem(TEMP_FARMS_KEY);
+    return data ? JSON.parse(data) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveTempFarmsToStorage(farms: Farm[]): void {
+  try {
+    localStorage.setItem(TEMP_FARMS_KEY, JSON.stringify(farms));
+  } catch (error) {
+    console.error('Error saving temp farms:', error);
+  }
+}
+
+function removeTempFarm(id: string): void {
+  const farms = getTempFarms().filter(f => f.id !== id);
+  saveTempFarmsToStorage(farms);
+}
+
+/**
+ * Save a farm to local storage only (no Supabase sync).
+ */
+export function saveTempFarm(farmData: FarmInsert): Farm {
+  const bounds = farmData.bounds ?? calculateBounds(farmData.geometry);
+  const area_hectares = farmData.area_hectares ?? calculateArea(farmData.geometry);
+
+  const tempFarm: Farm = {
+    id: `temp_${Date.now()}`,
+    name: farmData.name,
+    geometry: farmData.geometry,
+    bounds,
+    area_hectares,
+    user_id: null,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+
+  const existing = getTempFarms();
+  existing.unshift(tempFarm);
+  saveTempFarmsToStorage(existing);
+  console.log('[FarmService] Temp farm saved locally:', tempFarm.id);
+  return tempFarm;
+}
+
+/**
+ * Delete a farm — removes from Supabase (if not temp) and localStorage.
  */
 export async function deleteFarm(id: string): Promise<boolean> {
   try {
-    const farms = getFarmsFromStorage();
-    const filteredFarms = farms.filter(f => f.id !== id);
-
-    if (filteredFarms.length === farms.length) {
-      console.warn('Farm not found for deletion:', id);
-      return false;
+    if (id.startsWith('temp_')) {
+      removeTempFarm(id);
+      return true;
     }
 
-    saveFarmsToStorage(filteredFarms);
+    const { error } = await supabase.from('farms').delete().eq('id', id);
+    if (error) {
+      throw new Error(`Supabase delete failed: ${error.message}`);
+    }
+
+    const farms = getFarmsFromStorage().filter(f => f.id !== id);
+    saveFarmsToStorage(farms);
     console.log('[FarmService] Farm deleted:', id);
     return true;
   } catch (error) {

@@ -1,11 +1,12 @@
-import React, { Suspense } from 'react';
+import React, { Suspense, lazy } from 'react';
 import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { Skeleton } from "@/components/ui/skeleton";
-import PlotDesigner from "./pages/PlotDesigner";
+const PlotDesigner = lazy(() => import('./pages/PlotDesigner'));
+const FarmManager = lazy(() => import('./pages/FarmManager'));
 import FieldDiagnostics from "./pages/FieldDiagnostics";
 import PublicPassport from "./pages/PublicPassport";
 import Traceability from "./pages/Traceability";
@@ -88,19 +89,32 @@ const AppContent = () => {
       <Suspense fallback={<LoadingFallback />}>
         <Routes>
           {/* MVP flow: design a plot, then analyze it */}
+          {/* Home: sample farm diagnostics from the backend */}
           <Route
             path="/"
             element={
               <ProtectedRoute>
-                <PlotDesigner />
+                <FieldDiagnostics />
               </ProtectedRoute>
             }
           />
           <Route
             path="/field-diagnostics"
+            element={<Navigate to="/" replace />}
+          />
+          <Route
+            path="/farms"
             element={
-              <ProtectedRoute requireFarm>
-                <FieldDiagnostics />
+              <ProtectedRoute>
+                <FarmManager />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/plot-designer"
+            element={
+              <ProtectedRoute>
+                <PlotDesigner />
               </ProtectedRoute>
             }
           />
@@ -144,7 +158,7 @@ const AppContent = () => {
           <Route path="/dashboard" element={<Navigate to="/" replace />} />
           <Route path="/yield-prediction" element={<Navigate to="/" replace />} />
           <Route path="/advanced-monitoring" element={<Navigate to="/" replace />} />
-          <Route path="/draw-polygon" element={<Navigate to="/" replace />} />
+          <Route path="/draw-polygon" element={<Navigate to="/plot-designer" replace />} />
 
           <Route path="*" element={<NotFound />} />
         </Routes>
