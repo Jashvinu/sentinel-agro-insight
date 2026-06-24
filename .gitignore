@@ -1,5 +1,7 @@
 outputs/
 .codex-screenshots/
+.playwright-mcp/
+*.png
 
 # Logs
 logs
